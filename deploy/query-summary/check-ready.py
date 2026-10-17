@@ -9,7 +9,8 @@ backend, web, worker = items
 assert backend['Config']['Image'] == web['Config']['Image'] == IMAGE
 assert worker['Config']['Image'] == 'local/mi-fitness-nas:20261017-audit3'
 if len(sys.argv) > 1:
-    assert backend['Image'] == web['Image'] == sys.argv[1]
+    # 引擎可能报告OCI索引或配置digest；两者都来自已校验的同一镜像tar。
+    assert backend['Image'] == web['Image'] and backend['Image'] in set(sys.argv[1:])
 assert backend['HostConfig']['ReadonlyRootfs'] and web['HostConfig']['ReadonlyRootfs']
 assert any(m['Destination'] == '/state' for m in backend['Mounts'])
 assert any(m['Destination'] == '/run/secrets/keyring_master' and not m['RW'] for m in backend['Mounts'])

@@ -23,7 +23,9 @@ docker inspect --format '{{.Config.Image}} {{.Image}}' mi-fitness-health-backend
 # 不清理旧镜像；覆盖配置和镜像ID均保留以便回退。
 docker load -i "$package/health-summary8.tar"
 expected=$(cat "$package/image-id.txt")
-[ "$(docker image inspect --format '{{.Id}}' local/mi-fitness-nas:20261017-summary8)" = "$expected" ] || { echo '导入镜像ID不符。'; exit 1; }
+config_id=$(cat "$package/image-config-id.txt")
+actual=$(docker image inspect --format '{{.Id}}' local/mi-fitness-nas:20261017-summary8)
+[ "$actual" = "$expected" ] || [ "$actual" = "$config_id" ] || { echo '导入镜像ID不符。'; exit 1; }
 docker compose --project-name mi-fitness-health --env-file .env -f compose.yml -f "$package/compose.override.yml" config --quiet
 complete=0
 recover() {
@@ -40,7 +42,7 @@ cp "$package/compose.override.yml" compose.override.yml
 chown 1000:1001 compose.override.yml
 chmod 600 compose.override.yml
 compose up -d --no-deps --no-build --pull never --wait --wait-timeout 90 backend web
-python3 "$package/check-ready.py" "$expected"
+python3 "$package/check-ready.py" "$expected" "$config_id"
 [ "$before" = "$(snapshot)" ] || { echo 'worker或其他健康服务发生变化，停止验收。'; exit 1; }
 complete=1
 trap - EXIT

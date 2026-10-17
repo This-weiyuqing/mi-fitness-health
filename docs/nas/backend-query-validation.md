@@ -57,6 +57,6 @@ node --test qa/*.test.cjs
 
 离线构建使用 `deploy/query-summary/Dockerfile`，上下文只复制当前 `src/mi_fitness_mcp/` 源码（排除pycache），不把仓库运行文件送入构建。基础镜像须核对为audit3 `sha256:f4cbe187a98e3d3223e28e79b6edd115446ba62a78931f54f3bb0a6991a9395d`，构建选 `--network none --pull=false`；同时覆盖源码目录与installed purelib，保持audit3运行入口，无联网安装。
 
-本机离线发布目录为 `artifacts/query-summary/release/`：镜像tar、image-id、基础镜像id、覆盖配置、就绪/更新脚本、预期当前配置哈希及manifest.sha256。摘要和镜像包不提交Git。`Update-Nas.ps1`不带Deploy仅校验；正式执行必须先取得仅更新backend/web的明确确认，由用户交互输入sudo密码。更新脚本核对manifest和现有覆盖配置SHA256、保留旧覆盖与镜像、不变更.env，使用 `up -d --no-deps --no-build --pull never backend web`，比较其余健康服务容器id/镜像。失败恢复旧覆盖并尝试回退这两个服务。
+本机离线发布目录为 `artifacts/query-summary/release/`：镜像tar、image-id及同包配置digest、基础镜像id、覆盖配置、就绪/更新脚本、预期当前配置哈希及manifest.sha256。Docker引擎身份核对只接受本包确切的索引/配置digest，先校验整个tar；NAS引擎尚未实际导入验证。摘要和镜像包不提交Git。`Update-Nas.ps1`不带Deploy仅校验；正式执行必须先取得仅更新backend/web的明确确认，由用户交互输入sudo密码。更新脚本核对manifest和现有覆盖配置SHA256、保留旧覆盖与镜像、不变更.env，使用 `up -d --no-deps --no-build --pull never backend web`，比较其余健康服务容器id/镜像。失败恢复旧覆盖并尝试回退这两个服务。
 
 当前NAS覆盖配置防覆盖哈希由controller在部署前只读取得：`3cdbdc882b169f5785d6d1c3c46ceb159e209c567d6e28ceb31b15d4280fcdd8`。实际正式更新时脚本再次验证；若有漂移即停止。此记录不是部署确认。NAS就绪脚本只访问资源/代理状态、匿名认证、日历和无效日期路由，不进行健康导出、合成/压力测试。
