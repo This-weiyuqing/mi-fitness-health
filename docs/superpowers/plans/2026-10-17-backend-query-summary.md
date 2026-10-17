@@ -45,14 +45,14 @@
 
 **Interfaces:** `ViewSelection(kind:str,start_date:str,end_date:str,sample_type:str|None=None,include_naps:bool=True,pressure_level:str|None=None,latest_only:bool=False,limit:int|None=None)`是不可变参数对象。`ViewRepository(db:Database,user_id:str)`提供`snapshot()`上下文（返回sqlite3.Connection）、`statistics(selection,connection)->dict`、`points(selection,connection)->list[dict]`、`page(selection,page:int,connection)->dict`、`iter_records(selection,connection)->Iterator[dict]`。`ViewQueryService(db:Database,user_id:str)`提供`get_view(selection,page:int=1)->dict`、`get_page(selection,page:int=1)->dict`、`get_overview(start_date:str,end_date:str)->dict`和`iter_export(selection)->Iterator[dict]`。
 
-- [ ] 写失败测试：`test_selection_before_limit_and_paging`断言31条压力样本先筛26–50再取最近11条，第一页10条、第二页1条；总数11、均值来自全部11条，完整导出也是这11条。
-- [ ] 写失败测试：`test_equal_timestamps_stable_order_and_owner_isolation`将相同时间的多种类型/设备记录与其他用户混入，断言连续两次查询顺序一致、分页并集恰为筛选集合且没有别人的记录。
-- [ ] 写失败测试：`test_china_midnight_sleep_and_nulls`用北京时间跨日、UTC等价时刻、8小时实睡+15分钟清醒、小睡和NULL阶段数据，断言醒来日、实睡480分钟、有效日期均值正确；压力0保留，缺失日不补0。
-- [ ] `qa/view-statistics-oracle.cjs`仅在测试中调用基线`HealthViews.build`，读取stdin合成记录，输出卡片原始数值、图表、参考均值。`test_all_eight_kinds_match_frontend_baseline`逐类比较后端结果与oracle，浮点容差1e-9；不把JS运行时加入产品依赖。
-- [ ] 运行`python -m pytest tests/test_view_queries.py tests/test_view_statistics.py -q`，确认尚无新模块导致失败。
-- [ ] 实现上述接口。表与字段用固定白名单、值参数化。时间先用用户+宽时间范围缩小候选，再以SQLite时区转换精确筛选；无时区时间戳按既有数据的UTC含义解释并在测试固定。睡眠分期在SQLite JSON函数中计算，不加载所有会话至Python列表。均值按样本sum/count，不平均日均值。长范围桶大小`ceil(days/120)`；体重每桶选最近记录，其他桶口径与oracle一致。
-- [ ] `get_overview`只输出`steps,active_kcal,distance_m,resting_mean_bpm,mean_daily_asleep_minutes,mean_spo2_pct,mean_stress,activity_days,sleep_days,resting_count,spo2_count`，不含原始列表。睡眠以批准设计的实际实睡字段优先，统一旧总览只读duration字段的差异。
-- [ ] 增加`test_first_view_uses_one_read_snapshot`与`test_large_input_uses_sql_paging`，断言首屏同一事务、明细只读取当前页、摘要不调用原始样本全量查询方法。运行本任务测试通过后，只暂存相关文件，保存本地提交。
+- [x] 写失败测试：`test_selection_before_limit_and_paging`断言31条压力样本先筛26–50再取最近11条，第一页10条、第二页1条；总数11、均值来自全部11条，完整导出也是这11条。
+- [x] 写失败测试：`test_equal_timestamps_stable_order_and_owner_isolation`将相同时间的多种类型/设备记录与其他用户混入，断言连续两次查询顺序一致、分页并集恰为筛选集合且没有别人的记录。
+- [x] 写失败测试：`test_china_midnight_sleep_and_nulls`用北京时间跨日、UTC等价时刻、8小时实睡+15分钟清醒、小睡和NULL阶段数据，断言醒来日、实睡480分钟、有效日期均值正确；压力0保留，缺失日不补0。
+- [x] `qa/view-statistics-oracle.cjs`仅在测试中调用基线`HealthViews.build`，读取stdin合成记录，输出卡片原始数值、图表、参考均值。`test_all_eight_kinds_match_frontend_baseline`逐类比较后端结果与oracle，浮点容差1e-9；不把JS运行时加入产品依赖。
+- [x] 运行`python -m pytest tests/test_view_queries.py tests/test_view_statistics.py -q`，确认尚无新模块导致失败。
+- [x] 实现上述接口。表与字段用固定白名单、值参数化。时间先用用户+宽时间范围缩小候选，再以SQLite时区转换精确筛选；无时区时间戳按既有数据的UTC含义解释并在测试固定。睡眠分期在SQLite JSON函数中计算，不加载所有会话至Python列表。均值按样本sum/count，不平均日均值。长范围桶大小`ceil(days/120)`；体重每桶选最近记录，其他桶口径与oracle一致。
+- [x] `get_overview`只输出`steps,active_kcal,distance_m,resting_mean_bpm,mean_daily_asleep_minutes,mean_spo2_pct,mean_stress,activity_days,sleep_days,resting_count,spo2_count`，不含原始列表。睡眠以批准设计的实际实睡字段优先，统一旧总览只读duration字段的差异。
+- [x] 增加`test_first_view_uses_one_read_snapshot`与`test_large_input_uses_sql_paging`，断言首屏同一事务、明细只读取当前页、摘要不调用原始样本全量查询方法。运行本任务测试通过后，只暂存相关文件，保存本地提交。
 
 ### Task 2: 只读API、CSV与代理
 
@@ -61,12 +61,12 @@
 **Consumes:** 任务1的`ViewSelection`、`ViewQueryService`。
 **Produces:** `GET /api/views/{kind}`、`GET /api/views/{kind}/records`、`GET /api/views/{kind}/export`、`GET /api/overview`；既有接口及响应不变。
 
-- [ ] 写失败测试：`test_view_auth_validation_and_legacy_compatibility`断言未授权访问被拒绝、已授权可查；非法kind、倒序日期、>3660天、page<=0/>1000000、limit<=0与无效压力等级被拒绝；已有`/api/heart-rate`仍返回原始列表。
-- [ ] 写失败测试：`test_export_matches_filtered_set_and_escapes_formula`断言CSV恰含同一筛选集合和源字段，压力包含源level与当前等级、UTF-8 BOM和中文表头，文本`=1+1`被安全转义，导出不受当前页限制。
-- [ ] 写失败测试：`test_stream_disconnect_closes_cursor_and_proxy_response`断言取消消费会关闭数据库连接与httpx响应，不先执行全量list/read；代理鉴权头不转发到浏览器响应，未授权网页导出返回401。
-- [ ] 运行`python -m pytest tests/test_view_api.py tests/test_view_export.py tests/test_web_streaming.py -q`，确认新接口缺失导致失败。
-- [ ] 路由中通过既有`_resolve_context`取得db/user，沿用现有授权，不额外发放Key。导出使用FastAPI StreamingResponse，连接生命周期在迭代器内，游标分批读取。仅新导出路径使用Flask流式代理和httpx流式响应，正常结束/异常/断开均在finally关闭；其他代理路径不改。
-- [ ] 运行本任务测试及`tests/test_web.py`，通过后保存本地提交。异常响应沿用现有错误样式，不把失败当空数据。
+- [x] 写失败测试：`test_view_auth_validation_and_legacy_compatibility`断言未授权访问被拒绝、已授权可查；非法kind、倒序日期、>3660天、page<=0/>1000000、limit<=0与无效压力等级被拒绝；已有`/api/heart-rate`仍返回原始列表。
+- [x] 写失败测试：`test_export_matches_filtered_set_and_escapes_formula`断言CSV恰含同一筛选集合和源字段，压力包含源level与当前等级、UTF-8 BOM和中文表头，文本`=1+1`被安全转义，导出不受当前页限制。
+- [x] 写失败测试：`test_stream_disconnect_closes_cursor_and_proxy_response`断言取消消费会关闭数据库连接与httpx响应，不先执行全量list/read；代理鉴权头不转发到浏览器响应，未授权网页导出返回401。
+- [x] 运行`python -m pytest tests/test_view_api.py tests/test_view_export.py tests/test_web_streaming.py -q`，确认新接口缺失导致失败。
+- [x] 路由中通过既有`_resolve_context`取得db/user，沿用现有授权，不额外发放Key。导出使用FastAPI StreamingResponse，连接生命周期在迭代器内，游标分批读取。仅新导出路径使用Flask流式代理和httpx流式响应，正常结束/异常/断开均在finally关闭；其他代理路径不改。
+- [x] 运行本任务测试及`tests/test_web.py`，通过后保存本地提交。异常响应沿用现有错误样式，不把失败当空数据。
 
 ### Task 3: 前端只消费摘要与当前页
 
@@ -75,12 +75,12 @@
 **Consumes:** 任务2的只读接口。
 **Produces:** `HealthViews.fromSummary(kind,payload,range)->model`、现有`loadHealthView`/`healthPage`/`exportHealthRecords`改用新接口；`loadOverview`只调用一次`/api/overview`。
 
-- [ ] 写失败测试：`test_server_summary_drives_cards_without_raw_records`传入30个图表点和10条明细但总数90000，断言卡片和参考均值严格使用服务端statistics，不使用10条明细重算。
-- [ ] 写失败测试：`test_pagination_fetches_only_page_and_preserves_chart`断言翻页调用records端点、仅替换表格；CSV下载由导出URL完成，没有在JS拼接全量数组。
-- [ ] 写失败测试：`test_late_page_and_overview_responses_do_not_overwrite_new_range`覆盖翻页中换日期、换类型及日历晚到；旧响应不能覆盖新表格、图表、控制台。`test_empty_and_failure_remain_distinct`保留空与失败的区别。
-- [ ] 运行`node --test qa/health-server-summary.test.cjs qa/health-server-pagination.test.cjs`，确认新入口缺失失败。
-- [ ] `fromSummary`沿用已有配置、格式化、渲染器，构造卡片/参考值，不调用build执行样本聚合。表格取payload.page.rows，总数取page.total；CSV改为原生浏览器同源附件下载。固定参考值、纵轴下限40/80/40及双色日期横线不变。旧build保留为对照和兼容辅助，不走新的页面请求链。
-- [ ] 修改总览为单个紧凑接口，保留取消/过期请求保护；新静态资源版本升级。运行新增前端测试和受影响的原有前端测试，通过后保存本地提交。
+- [x] 写失败测试：`test_server_summary_drives_cards_without_raw_records`传入30个图表点和10条明细但总数90000，断言卡片和参考均值严格使用服务端statistics，不使用10条明细重算。
+- [x] 写失败测试：`test_pagination_fetches_only_page_and_preserves_chart`断言翻页调用records端点、仅替换表格；CSV下载由导出URL完成，没有在JS拼接全量数组。
+- [x] 写失败测试：`test_late_page_and_overview_responses_do_not_overwrite_new_range`覆盖翻页中换日期、换类型及日历晚到；旧响应不能覆盖新表格、图表、控制台。`test_empty_and_failure_remain_distinct`保留空与失败的区别。
+- [x] 运行`node --test qa/health-server-summary.test.cjs qa/health-server-pagination.test.cjs`，确认新入口缺失失败。
+- [x] `fromSummary`沿用已有配置、格式化、渲染器，构造卡片/参考值，不调用build执行样本聚合。表格取payload.page.rows，总数取page.total；CSV改为原生浏览器同源附件下载。固定参考值、纵轴下限40/80/40及双色日期横线不变。旧build保留为对照和兼容辅助，不走新的页面请求链。
+- [x] 修改总览为单个紧凑接口，保留取消/过期请求保护；新静态资源版本升级。运行新增前端测试和受影响的原有前端测试，通过后保存本地提交。
 
 ### Task 4: 本机整体验证、可部署包与兼容同步
 
@@ -89,13 +89,15 @@
 **Consumes:** 已通过任务1–3的服务和接口。
 **Produces:** 只包含backend/web替换的离线包、可核对的数据一致性与性能报告；包和截图放入忽略的artifacts目录，不提交Git。
 
-- [ ] 本机生成30天合成数据，每天3000条心率、1000条血氧、1000条压力，另含活动/睡眠/体重/运动/异常样本。再以10倍密度比较首屏响应体积，`test_payload_does_not_scale_with_raw_samples`断言仍只含10条明细、<=120桶、无原始全量数组；记录具体字节、耗时和内存，不预先宣称倍数提升。
-- [ ] 通过同一只读数据库分别调用旧查询+基线统计与新汇总，核对7天/30天各类数值和CSV集合；检查分页并集及相同时间排序。只使用本机生成的记录。
-- [ ] 浏览器实际检查总览、八类健康页、7天/30天切换、翻页、导出、深浅主题、控制台、参考线和工作日标记；记录首屏节点、响应体积与加载耗时；断言没有全量原始接口请求和浏览器异常。
-- [ ] 本机Linux容器验证新backend/web的联通、认证、CSV流传输、取消与挂载；保留worker旧版本。更新包的防覆盖哈希从部署前只读查询取得，脚本使用`up -d --no-deps ... backend web`，核对worker及其他健康服务未重建，并保留回退镜像与覆盖配置。不得在NAS运行合成、压力或单元测试。
-- [ ] 做一次独立代码审查，修复本次引入的重大问题，仅重跑受影响验证。更新报告区分“本机已验证”与“NAS未部署”。运行`python scripts/sync_legacy_workspace.py`核对兼容副本，再核对差异保存本地提交，不推送。
+- [x] 本机生成30天合成数据，每天3000条心率、1000条血氧、1000条压力，另含活动/睡眠/体重/运动/异常样本。再以10倍密度比较首屏响应体积，`test_payload_does_not_scale_with_raw_samples`断言仍只含10条明细、<=120桶、无原始全量数组；记录具体字节、耗时和内存，不预先宣称倍数提升。
+- [x] 通过同一只读数据库分别调用旧查询+基线统计与新汇总，核对7天/30天各类数值和CSV集合；检查分页并集及相同时间排序。只使用本机生成的记录。
+- [x] 浏览器实际检查总览、八类健康页、7天/30天切换、翻页、导出、深浅主题、控制台、参考线和工作日标记；记录首屏节点、响应体积与加载耗时；断言没有全量原始接口请求和浏览器异常。
+- [x] 本机Linux容器验证新backend/web的联通、认证、CSV流传输、取消与挂载；保留worker旧版本。更新包的防覆盖哈希从部署前只读查询取得，脚本使用`up -d --no-deps ... backend web`，核对worker及其他健康服务未重建，并保留回退镜像与覆盖配置。不得在NAS运行合成、压力或单元测试。
+- [x] 做一次独立代码审查，修复本次引入的重大问题，仅重跑受影响验证。更新报告区分“本机已验证”与“NAS未部署”。运行`python scripts/sync_legacy_workspace.py`核对兼容副本，再核对差异保存本地提交，不推送。
 - [ ] 给用户查看实际变更、测量结果与最终更新包，按规则确认仅更新健康backend和web。得到部署确认后，打开本机交互终端由用户输入sudo密码，部署就绪核对通过再报告成功。
 
 ## 自查结论
 
 已覆盖批准设计的八类统计、总览、分页、导出、只读兼容、时区、筛选、长范围、界面保持、本机性能验证、Git与旧副本同步、NAS回退。任务1先定义统一筛选及数值协议，任务2/3依赖该协议，顺序实施可避免接口分叉；推荐当前会话原生执行，最后独立审查。此文档为实施计划，不代表接口已经实现或性能已经改善。
+
+执行状态：2026-10-17 本机实施与独立审查已完成，部署步骤等待用户确认。验证与审查见 docs/nas/backend-query-validation.md、docs/nas/backend-query-review.md。
