@@ -22,8 +22,18 @@ cp compose.override.yml "$backup"
 docker inspect --format '{{.Config.Image}} {{.Image}}' mi-fitness-health-backend-1 mi-fitness-health-web-1 > "$backup.images"
 # 不清理旧镜像；覆盖配置和镜像ID均保留以便回退。
 docker load -i "$package/health-summary8.tar"
-expected=$(cat "$package/image-id.txt")
-config_id=$(cat "$package/image-config-id.txt")
+read_image_id() {
+  python3 - "$1" <<'PY'
+import re,sys
+from pathlib import Path
+value=Path(sys.argv[1]).read_bytes().rstrip(b'\r\n')
+if re.fullmatch(rb'sha256:[0-9a-f]{64}',value) is None:
+    raise SystemExit('镜像身份文件格式无效')
+sys.stdout.write(value.decode('ascii'))
+PY
+}
+expected=$(read_image_id "$package/image-id.txt")
+config_id=$(read_image_id "$package/image-config-id.txt")
 actual=$(docker image inspect --format '{{.Id}}' local/mi-fitness-nas:20261017-summary8)
 [ "$actual" = "$expected" ] || [ "$actual" = "$config_id" ] || { echo '导入镜像ID不符。'; exit 1; }
 docker compose --project-name mi-fitness-health --env-file .env -f compose.yml -f "$package/compose.override.yml" config --quiet

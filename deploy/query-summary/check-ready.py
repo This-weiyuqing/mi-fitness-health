@@ -32,10 +32,13 @@ assert '20261017-summary8' in get('/')[1]
 for path,marker in [('/static/js/health-views.js','fromSummary'),('/static/js/health-ui.js','/api/views/'),('/static/js/app.js','/api/overview')]:
     status,body=get(path);assert status==200 and marker in body
 assert json.loads(get('/api/proxy_status')[1])['backend_reachable']
-for path in ['/proxy/api/views/stress','/proxy/api/views/stress/records','/proxy/api/views/stress/export','/proxy/api/overview']:
-    assert get(path+'?start_date=invalid&end_date=invalid')[0]==422
+status,schema=get('/proxy/openapi.json')
+assert status==200
+paths=json.loads(schema)['paths']
+for path in ['/api/views/{kind}','/api/views/{kind}/records','/api/views/{kind}/export','/api/overview']:
+    assert 'get' in paths.get(path,{})
 assert os.environ.get('MI_FITNESS_CALENDAR_DIR')=='/calendar'
 assert json.loads(get('/api/calendar?start=2026&end=2026')[1])['years']['2026']['days']
-print('backend/web资源、代理、匿名拒绝和新路由就绪；未查询健康记录。')
+print('backend/web资源、代理、匿名拒绝和OpenAPI路由元数据就绪；未请求健康查询或导出。')
 '''
 subprocess.run(['docker', 'exec', '-i', 'mi-fitness-health-web-1', 'python', '-'], input=probe.encode('utf-8'), check=True)

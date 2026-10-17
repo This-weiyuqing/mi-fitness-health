@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.sha256 text eol=lf
+deploy/query-summary/*.txt text eol=lf
+artifacts/query-summary/release/*.txt text eol=lf

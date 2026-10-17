@@ -30,7 +30,9 @@
 
 `deploy/query-summary/`包含离线增量Dockerfile、仅替换backend/web镜像的覆盖配置、哈希防覆盖和回退脚本。基础镜像audit3必须在本机已有，构建不安装依赖；worker继续audit3。发布包为本机 `artifacts/query-summary/release/`，不提交Git。
 
-正式更新前须明确确认仅替换健康项目backend和web。确认后由用户在交互PowerShell运行 `deploy/query-summary/Update-Nas.ps1 -Package artifacts/query-summary/release -Deploy` 并在终端输入sudo密码；不加 `-Deploy` 只校验本地发布包。脚本沿用原端口、密码来源和数据/日历挂载，不处理其他NAS服务。就绪检查只检查资源、代理、鉴权和无效日期的新路由，不运行合成测试或读取健康记录。
+已有镜像tar时，`python deploy/query-summary/prepare-release.py`仅重建发布脚本、UTF-8无BOM/LF元数据及manifest，不构建或修改镜像tar。shell读取镜像身份时兼容旧CRLF，并严格校验`sha256:<64位小写十六进制>`。
+
+正式更新前须明确确认仅替换健康项目backend和web。确认后由用户在交互PowerShell运行 `deploy/query-summary/Update-Nas.ps1 -Package artifacts/query-summary/release -Deploy` 并在终端输入sudo密码；不加 `-Deploy` 只校验本地发布包。脚本沿用原端口、密码来源和数据/日历挂载，不处理其他NAS服务。就绪检查只检查资源、代理、鉴权、日历和OpenAPI路由元数据，不发健康查询/导出请求，不运行合成或负向参数测试。
 
 ## 后续维护
 
