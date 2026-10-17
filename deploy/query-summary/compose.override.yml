@@ -1,0 +1,17 @@
+# 沿用当前NAS的端口、密码来源和日历挂载，只升级backend/web。
+services:
+  backend:
+    image: local/mi-fitness-nas:20261017-summary8
+  web:
+    image: local/mi-fitness-nas:20261017-summary8
+    environment:
+      MI_FITNESS_CALENDAR_DIR: /calendar
+      MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,192.168.31.201
+      MI_FITNESS_WEB_PASSWORD: ${MI_FITNESS_WEB_PASSWORD:?尚未初始化网页访问密码}
+    volumes:
+      - ./calendar:/calendar
+    ports: !override
+      - '127.0.0.1:18322:8322'
+      - '192.168.31.201:18322:8322'
+  worker:
+    image: local/mi-fitness-nas:20261017-audit3
