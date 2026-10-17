@@ -46,7 +46,7 @@ class SleepSession(BaseEntity):
     sleep_id: str = Field(description="Unique sleep session ID")
     start_at: datetime = Field(description="Sleep start time")
     end_at: datetime = Field(description="Sleep end time")
-    duration_minutes: int = Field(ge=0, description="Total duration")
+    duration_minutes: int = Field(ge=0, description="Total sleep duration excluding awake minutes")
     time_asleep_minutes: int = Field(ge=0, description="Actual sleep time")
     time_awake_minutes: int = Field(ge=0, description="Time awake during sleep")
     sleep_score: int | None = Field(None, ge=0, le=100, description="Sleep quality score")

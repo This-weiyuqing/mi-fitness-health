@@ -89,7 +89,7 @@ class QueryService:
         """Aggregate daily series by week."""
         weeks = {}
 
-        for item in series:
+        for item in sorted(series, key=lambda record: record["date"]):
             date = datetime.strptime(item["date"], "%Y-%m-%d")
             # 计算周起始日（周一）
             week_start = date - timedelta(days=date.weekday())
@@ -109,6 +109,8 @@ class QueryService:
                 value = min(values)
             elif aggregation == "max":
                 value = max(values)
+            elif aggregation == "latest":
+                value = values[-1]
             else:
                 value = sum(values)
 
@@ -124,7 +126,7 @@ class QueryService:
         """Aggregate daily series by month."""
         months = {}
 
-        for item in series:
+        for item in sorted(series, key=lambda record: record["date"]):
             date = datetime.strptime(item["date"], "%Y-%m-%d")
             month_key = date.strftime("%Y-%m")
 
@@ -142,6 +144,8 @@ class QueryService:
                 value = min(values)
             elif aggregation == "max":
                 value = max(values)
+            elif aggregation == "latest":
+                value = values[-1]
             else:
                 value = sum(values)
 

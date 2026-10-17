@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from mi_fitness_mcp.adapters.base import DataAdapter
@@ -32,6 +32,7 @@ class SyncService:
         self.db = db
         self.default_lookback_days = default_lookback_days
         self.chunk_days = chunk_days
+        self._owner_scope = {"user_id": adapter.user_id} if getattr(adapter, "user_id", None) else {}
         self._sync_lock = asyncio.Lock()
         self._sync_active = False
 
@@ -47,6 +48,21 @@ class SyncService:
 
         for record in records:
             yield record
+
+    async def _persist_records(self, data_type: str, records: Any):
+        """限制每批 200 条，并在线程中提交，避免磁盘等待堵住 HTTP 请求。"""
+        batch = []
+        async for record in self._iterate_records(records):
+            batch.append(record)
+            if len(batch) >= 200:
+                results = await asyncio.to_thread(self.db.insert_records_batch, data_type, batch)
+                for item, created in zip(batch, results, strict=True):
+                    yield item, created
+                batch = []
+        if batch:
+            results = await asyncio.to_thread(self.db.insert_records_batch, data_type, batch)
+            for item, created in zip(batch, results, strict=True):
+                yield item, created
 
     async def sync_data_type(
         self,
@@ -92,12 +108,13 @@ class SyncService:
         # 获取上次同步状态，用于增量同步
         last_record_ts = None
         if not force_full:
-            state = self.db.get_sync_state(data_type)
+            state = self.db.get_sync_state(data_type, **self._owner_scope)
             if state and state.get("last_record_timestamp"):
                 last_record_ts = datetime.fromisoformat(state["last_record_timestamp"])
 
+        zone = timezone(timedelta(hours=8)) if getattr(self.adapter, "region", None) in ("", "cn") else None
         if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
+            end_date = datetime.now(zone).strftime("%Y-%m-%d")
         try:
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
             start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
@@ -105,7 +122,7 @@ class SyncService:
             raise ValueError("Dates must use YYYY-MM-DD format") from exc
         if start_dt is None:
             start_dt = (
-                last_record_ts.replace(tzinfo=None)
+                datetime.combine((last_record_ts.astimezone(zone) if zone and last_record_ts.tzinfo else last_record_ts).date(), datetime.min.time())
                 if last_record_ts
                 else end_dt - timedelta(days=self.default_lookback_days - 1)
             )
@@ -177,8 +194,8 @@ class SyncService:
         # 按数据类型执行同步
         if data_type == "daily_activity":
             records = self.adapter.iter_daily_activity(start_date, end_date)
-            async for activity in self._iterate_records(records):
-                if self.db.insert_daily_activity(activity):
+            async for activity, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -187,8 +204,8 @@ class SyncService:
 
         elif data_type == "sleep":
             records = self.adapter.iter_sleep_sessions(start_date, end_date)
-            async for sleep in self._iterate_records(records):
-                if self.db.insert_sleep_session(sleep):
+            async for sleep, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -197,8 +214,8 @@ class SyncService:
 
         elif data_type == "workouts":
             records = self.adapter.iter_workouts(start_date, end_date)
-            async for workout in self._iterate_records(records):
-                if self.db.insert_workout(workout):
+            async for workout, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -207,8 +224,8 @@ class SyncService:
 
         elif data_type == "body_measurements":
             records = self.adapter.iter_body_measurements(start_date, end_date)
-            async for measurement in self._iterate_records(records):
-                if self.db.insert_body_measurement(measurement):
+            async for measurement, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -217,8 +234,8 @@ class SyncService:
 
         elif data_type == "heart_rate":
             records = self.adapter.iter_heart_rate(start_date, end_date)
-            async for sample in self._iterate_records(records):
-                if self.db.insert_heart_rate_sample(sample):
+            async for sample, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -227,8 +244,8 @@ class SyncService:
 
         elif data_type == "spo2":
             records = self.adapter.iter_spo2(start_date, end_date)
-            async for sample in self._iterate_records(records):
-                if self.db.insert_spo2_sample(sample):
+            async for sample, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -237,8 +254,8 @@ class SyncService:
 
         elif data_type == "stress":
             records = self.adapter.iter_stress(start_date, end_date)
-            async for sample in self._iterate_records(records):
-                if self.db.insert_stress_sample(sample):
+            async for sample, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -247,8 +264,8 @@ class SyncService:
 
         elif data_type == "abnormal_heart_beat":
             records = self.adapter.iter_abnormal_heart_beat(start_date, end_date)
-            async for event in self._iterate_records(records):
-                if self.db.insert_abnormal_heart_beat_event(event):
+            async for event, created in self._persist_records(data_type, records):
+                if created:
                     added += 1
                 else:
                     updated += 1
@@ -260,7 +277,7 @@ class SyncService:
 
         # 更新同步状态
         if last_ts:
-            self.db.update_sync_state(data_type, last_ts)
+            await asyncio.to_thread(self.db.update_sync_state, data_type, last_ts, **self._owner_scope)
 
         logger.info(
             f"Synced {data_type}: {added} added, {updated} updated, "

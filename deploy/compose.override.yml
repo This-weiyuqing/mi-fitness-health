@@ -1,0 +1,17 @@
+# 保留已授权的局域网绑定，为网页单独设置访问密码。
+services:
+  backend:
+    image: local/mi-fitness-nas:20261017-audit3
+  web:
+    image: local/mi-fitness-nas:20261017-ui7
+    environment:
+      MI_FITNESS_CALENDAR_DIR: /calendar
+      MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,192.168.31.201
+      MI_FITNESS_WEB_PASSWORD: ${MI_FITNESS_WEB_PASSWORD:?尚未初始化网页访问密码}
+    volumes:
+      - ./calendar:/calendar
+    ports: !override
+      - '127.0.0.1:18322:8322'
+      - '192.168.31.201:18322:8322'
+  worker:
+    image: local/mi-fitness-nas:20261017-audit3

@@ -1,0 +1,79 @@
+# 长期运行配置：仅回环访问；不修改现有容器或 Tailscale。
+name: mi-fitness-health
+services:
+  backend:
+    image: local/mi-fitness-nas:20261016
+    command: ["api"]
+    environment:
+      MI_FITNESS_ADMIN_KEY: ${MI_FITNESS_ADMIN_KEY:?需在本地生成管理员密钥}
+      MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,backend
+    volumes:
+      - ./state:/state
+      - ./secrets/keyring_master:/run/secrets/keyring_master:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8321/', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    user: '1000:1001'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+  web:
+    image: local/mi-fitness-nas:20261016
+    command: ["web"]
+    environment:
+      MI_FITNESS_ADMIN_KEY: ${MI_FITNESS_ADMIN_KEY:?需在本地生成管理员密钥}
+      MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1
+    ports:
+      - '127.0.0.1:18322:8322'
+    depends_on:
+      backend:
+        condition: service_healthy
+    user: '1000:1001'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+  worker:
+    image: local/mi-fitness-nas:20261016
+    command: ["worker"]
+    volumes:
+      - ./state:/state
+    depends_on:
+      backend:
+        condition: service_healthy
+    user: '1000:1001'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    cpus: 0.25
+    restart: unless-stopped
+  readonly:
+    image: local/mi-fitness-nas:20261016
+    command: ["mcp"]
+    profiles: [chatgpt]
+    volumes:
+      - ./state/data:/health:ro
+    user: '1000:1001'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped

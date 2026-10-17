@@ -306,7 +306,8 @@ async def _handle_get_connection_status() -> dict:
             "stress",
             "abnormal_heart_beat",
         ]:
-            state = db.get_sync_state(data_type)
+            owner_scope = {"user_id": adapter.user_id} if getattr(adapter, "user_id", None) else {}
+            state = db.get_sync_state(data_type, **owner_scope)
             if state and state.get("last_sync_at"):
                 available_types.append(data_type)
                 sync_time = datetime.fromisoformat(state["last_sync_at"])

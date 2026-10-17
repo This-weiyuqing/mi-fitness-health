@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mi Fitness MCP | 健康数据中心与调试控制台</title>
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v=20261017-ui7">
+  <link rel="stylesheet" href="/static/css/health.css?v=20261017-ui7">
 </head>
 <body>
   <div id="app-container">
@@ -49,7 +50,7 @@
     </header>
 
     <!-- Main Layout Grid -->
-    <div class="main-layout">
+    <div class="main-layout inspector-collapsed" id="mainLayout">
       <!-- Left Sidebar Navigation -->
       <aside class="app-sidebar">
         <div>
@@ -143,6 +144,7 @@
           <button class="preset-pill" data-preset="7d" id="preset-7d">近 7 天</button>
           <button class="preset-pill" data-preset="30d" id="preset-30d">近 30 天</button>
           <button class="preset-pill" data-preset="month" id="preset-month">本月</button>
+          <button class="btn btn-outline btn-sm" id="inspectorToggle" onclick="toggleInspector()" aria-expanded="false" aria-controls="inspectorPanel" style="margin-left:auto">展开控制台</button>
         </div>
 
         <!-- 1. Overview Tab -->
@@ -150,7 +152,7 @@
           <div class="panel-header">
             <div>
               <div class="panel-title"><span class="title-icon">📊</span> 健康指标总览</div>
-              <div class="panel-subtitle">基于选定时间范围的最新健康数据概览</div>
+              <div class="panel-subtitle" id="overviewRange">按所选日期汇总；均值仅计算有记录的数据</div>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="loadOverview()">🔄 刷新数据</button>
           </div>
@@ -158,73 +160,73 @@
           <div class="stat-cards-grid">
             <div class="stat-card steps">
               <div class="stat-card-header">
-                <span class="stat-card-title">今日总步数</span>
+                <span class="stat-card-title">期间总步数</span>
                 <div class="stat-card-icon">👟</div>
               </div>
               <div class="stat-card-value"><span id="statSteps">--</span> <span class="stat-card-unit">步</span></div>
               <div class="stat-card-footer">
-                <span>目标 10,000 步</span>
-                <span class="stat-card-badge up">活动</span>
+                <span id="statActivityCoverage">--</span>
+                <span class="stat-card-badge up">累计</span>
               </div>
             </div>
 
             <div class="stat-card calories">
               <div class="stat-card-header">
-                <span class="stat-card-title">活动消耗</span>
+                <span class="stat-card-title">期间活动消耗</span>
                 <div class="stat-card-icon">🔥</div>
               </div>
               <div class="stat-card-value"><span id="statCalories">--</span> <span class="stat-card-unit">kcal</span></div>
               <div class="stat-card-footer">
                 <span>距离: <span id="statDistance">--</span> km</span>
-                <span class="stat-card-badge neutral">日常</span>
+                <span class="stat-card-badge neutral">累计</span>
               </div>
             </div>
 
             <div class="stat-card hr">
               <div class="stat-card-header">
-                <span class="stat-card-title">静息心率</span>
+                <span class="stat-card-title">平均静息心率</span>
                 <div class="stat-card-icon">❤️</div>
               </div>
               <div class="stat-card-value"><span id="statHr">--</span> <span class="stat-card-unit">bpm</span></div>
               <div class="stat-card-footer">
-                <span>静息基准</span>
-                <span class="stat-card-badge up">正常</span>
+                <span id="statHrCoverage">--</span>
+                <span class="stat-card-badge up">均值</span>
               </div>
             </div>
 
             <div class="stat-card sleep">
               <div class="stat-card-header">
-                <span class="stat-card-title">最近睡眠</span>
+                <span class="stat-card-title">日均睡眠</span>
                 <div class="stat-card-icon">💤</div>
               </div>
               <div class="stat-card-value"><span id="statSleep">--</span> <span class="stat-card-unit">小时</span></div>
               <div class="stat-card-footer">
-                <span>包含小睡计算</span>
-                <span class="stat-card-badge neutral">良好</span>
+                <span id="statSleepCoverage">--</span>
+                <span class="stat-card-badge neutral">日均</span>
               </div>
             </div>
 
             <div class="stat-card spo2">
               <div class="stat-card-header">
-                <span class="stat-card-title">血氧饱和度</span>
+                <span class="stat-card-title">平均血氧</span>
                 <div class="stat-card-icon">🫁</div>
               </div>
               <div class="stat-card-value"><span id="statSpo2">--</span></div>
               <div class="stat-card-footer">
-                <span>>95% 正常范围</span>
-                <span class="stat-card-badge up">健康</span>
+                <span id="statSpo2Coverage">--</span>
+                <span class="stat-card-badge up">均值</span>
               </div>
             </div>
 
             <div class="stat-card stress">
               <div class="stat-card-header">
-                <span class="stat-card-title">压力水平</span>
+                <span class="stat-card-title">平均压力</span>
                 <div class="stat-card-icon">🧠</div>
               </div>
               <div class="stat-card-value"><span id="statStress">--</span></div>
               <div class="stat-card-footer">
                 <span>0-100 指数</span>
-                <span class="stat-card-badge neutral">适中</span>
+                <span class="stat-card-badge neutral">均值</span>
               </div>
             </div>
           </div>
@@ -241,27 +243,28 @@
         </section>
 
         <!-- 2. Daily Activity Tab -->
-        <section class="tab-pane" id="tab-activity">
+        <section class="tab-pane health-query-tab" id="tab-activity">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">👟</span> 每日活动汇总 (/api/summary)</div>
+                <div class="panel-title"><span class="title-icon">👟</span> 每日活动</div>
                 <div class="panel-subtitle">步数、活动距离、日常活动卡路里消耗</div>
               </div>
               <button class="btn btn-primary" onclick="querySummary()">查询活动数据</button>
             </div>
-            <div id="summaryVisualContainer" style="margin-top: 14px;">
+            <div hidden id="summaryVisualContainer" style="margin-top: 14px;">
               <p class="panel-subtitle">点击上方按钮查询所选日期范围内的每日活动汇总...</p>
             </div>
           </div>
+          <div class="health-results" id="healthView-activity" aria-live="polite"></div>
         </section>
 
         <!-- 3. Heart Rate Tab -->
-        <section class="tab-pane" id="tab-heartrate">
+        <section class="tab-pane health-query-tab" id="tab-heartrate">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">❤️</span> 心率采样 (/api/heart-rate)</div>
+                <div class="panel-title"><span class="title-icon">❤️</span> 心率监测</div>
                 <div class="panel-subtitle">逐分钟心率采样点、静息心率与极限心率统计</div>
               </div>
               <button class="btn btn-primary" onclick="queryHeartRate()">查询心率数据</button>
@@ -269,7 +272,7 @@
 
             <div class="form-row" style="margin-top: 14px;">
               <div class="form-group">
-                <label class="form-label">心率样本类型 (sample_type)</label>
+                <label class="form-label">采样类型</label>
                 <select id="hrType" class="select-control">
                   <option value="">全部类型 (All)</option>
                   <option value="passive">被动日常监测 (passive)</option>
@@ -278,19 +281,20 @@
                 </select>
               </div>
               <div class="form-group sm">
-                <label class="form-label">返回上限 (limit)</label>
-                <input type="number" id="hrLimit" class="input-control" placeholder="默认 100">
+                <label class="form-label">仅显示最近条数</label>
+                <input type="number" id="hrLimit" class="input-control" placeholder="留空显示全部">
               </div>
             </div>
           </div>
+          <div class="health-results" id="healthView-heartrate" aria-live="polite"></div>
         </section>
 
         <!-- 4. Sleep Tab -->
-        <section class="tab-pane" id="tab-sleep">
+        <section class="tab-pane health-query-tab" id="tab-sleep">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">💤</span> 睡眠分析与分段 (/api/sleep)</div>
+                <div class="panel-title"><span class="title-icon">💤</span> 睡眠分析</div>
                 <div class="panel-subtitle">入睡与清醒时间、深睡/浅睡/REM分期、零星小睡统计</div>
               </div>
               <button class="btn btn-primary" onclick="querySleep()">查询睡眠分析</button>
@@ -298,37 +302,39 @@
 
             <div class="form-row" style="margin-top: 14px;">
               <div class="form-group">
-                <label class="form-label">包含小睡 (include_naps)</label>
+                <label class="form-label">睡眠范围</label>
                 <select id="napsSelect" class="select-control">
-                  <option value="true">包含零星小睡 (True)</option>
-                  <option value="false">仅主睡眠阶段 (False)</option>
+                  <option value="true">包含小睡</option>
+                  <option value="false">不含小睡</option>
                 </select>
               </div>
             </div>
 
-            <div id="sleepTimelineWrapper" style="margin-top: 16px;"></div>
+            <div hidden id="sleepTimelineWrapper" style="margin-top: 16px;"></div>
           </div>
+          <div class="health-results" id="healthView-sleep" aria-live="polite"></div>
         </section>
 
         <!-- 5. Workouts Tab -->
-        <section class="tab-pane" id="tab-workouts">
+        <section class="tab-pane health-query-tab" id="tab-workouts">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">🏃</span> 运动训练记录 (/api/workouts)</div>
+                <div class="panel-title"><span class="title-icon">🏃</span> 运动记录</div>
                 <div class="panel-subtitle">户外跑步、骑行、徒步等各项运动轨迹、心率区间与配速</div>
               </div>
               <button class="btn btn-primary" onclick="queryWorkouts()">查询运动记录</button>
             </div>
           </div>
+          <div class="health-results" id="healthView-workouts" aria-live="polite"></div>
         </section>
 
         <!-- 6. Body Measurements Tab -->
-        <section class="tab-pane" id="tab-body">
+        <section class="tab-pane health-query-tab" id="tab-body">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">⚖️</span> 体重与体成分 (/api/body-measurements)</div>
+                <div class="panel-title"><span class="title-icon">⚖️</span> 体成分与体重</div>
                 <div class="panel-subtitle">体脂率、BMI、肌肉量、骨量、内脏脂肪等（需体脂秤支持）</div>
               </div>
               <button class="btn btn-primary" onclick="queryBody()">查询体成分数据</button>
@@ -337,17 +343,18 @@
             <label class="custom-checkbox">
               <input type="checkbox" id="latestOnlyCheck">
               <div class="checkbox-box">✓</div>
-              <span>仅返回最新一条记录 (latest_only=true)</span>
+              <span>仅显示最新一条记录</span>
             </label>
           </div>
+          <div class="health-results" id="healthView-body" aria-live="polite"></div>
         </section>
 
         <!-- 7. SpO2 Tab -->
-        <section class="tab-pane" id="tab-spo2">
+        <section class="tab-pane health-query-tab" id="tab-spo2">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">🫁</span> 血氧监测 (/api/spo2)</div>
+                <div class="panel-title"><span class="title-icon">🫁</span> 血氧饱和度</div>
                 <div class="panel-subtitle">全天血氧饱和度连续采样与低血氧告警</div>
               </div>
               <button class="btn btn-primary" onclick="querySpo2()">查询血氧记录</button>
@@ -355,19 +362,20 @@
 
             <div class="form-row" style="margin-top: 14px;">
               <div class="form-group sm">
-                <label class="form-label">数量限制 (limit)</label>
+                <label class="form-label">仅显示最近条数</label>
                 <input type="number" id="spo2Limit" class="input-control" placeholder="如 50">
               </div>
             </div>
           </div>
+          <div class="health-results" id="healthView-spo2" aria-live="polite"></div>
         </section>
 
         <!-- 8. Stress Tab -->
-        <section class="tab-pane" id="tab-stress">
+        <section class="tab-pane health-query-tab" id="tab-stress">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">🧠</span> 压力监测 (/api/stress)</div>
+                <div class="panel-title"><span class="title-icon">🧠</span> 压力指数</div>
                 <div class="panel-subtitle">全天压力值、压力等级分布与放松建议</div>
               </div>
               <button class="btn btn-primary" onclick="queryStress()">查询压力记录</button>
@@ -375,33 +383,36 @@
 
             <div class="form-row" style="margin-top: 14px;">
               <div class="form-group">
-                <label class="form-label">压力等级过滤 (level)</label>
+                <label class="form-label">压力等级</label>
                 <select id="stressLevel" class="select-control">
                   <option value="">全部等级 (All)</option>
-                  <option value="low">低度压力 (Low)</option>
-                  <option value="medium">中度压力 (Medium)</option>
-                  <option value="high">高度压力 (High)</option>
+                  <option value="relaxed">放松（1–25）</option>
+                  <option value="mild">轻度（26–50）</option>
+                  <option value="moderate">中度（51–80）</option>
+                  <option value="severe">重度（81–100）</option>
                 </select>
               </div>
               <div class="form-group sm">
-                <label class="form-label">数量限制 (limit)</label>
+                <label class="form-label">仅显示最近条数</label>
                 <input type="number" id="stressLimit" class="input-control" placeholder="如 50">
               </div>
             </div>
           </div>
+          <div class="health-results" id="healthView-stress" aria-live="polite"></div>
         </section>
 
         <!-- 9. Abnormal Heart Beat Tab -->
-        <section class="tab-pane" id="tab-abnormal">
+        <section class="tab-pane health-query-tab" id="tab-abnormal">
           <div class="glass-panel">
             <div class="panel-header">
               <div>
-                <div class="panel-title"><span class="title-icon">⚠️</span> 异常心跳事件 (/api/abnormal-heart-beat)</div>
+                <div class="panel-title"><span class="title-icon">⚠️</span> 异常心跳</div>
                 <div class="panel-subtitle">静息心率过高、过低或心律不齐事件记录</div>
               </div>
               <button class="btn btn-primary" onclick="queryAbnormalHr()">查询异常心跳</button>
             </div>
           </div>
+          <div class="health-results" id="healthView-abnormal" aria-live="polite"></div>
         </section>
 
         <!-- 10. Metric Series Tab -->
@@ -542,12 +553,13 @@
       </main>
 
       <!-- Right Inspector & Developer Console -->
-      <aside class="app-inspector">
+      <aside class="app-inspector" id="inspectorPanel" hidden>
         <div class="inspector-header">
           <div class="inspector-title">
             <span>💻</span> 实时控制台与响应检视
           </div>
           <div class="btn-group">
+            <button class="btn btn-secondary btn-sm" onclick="setInspectorCollapsed(true)" title="收起控制台">收起</button>
             <button class="btn btn-secondary btn-sm" onclick="copyResponse()" title="复制 JSON">📋 复制</button>
             <button class="btn btn-secondary btn-sm" onclick="copyCurl()" title="生成 cURL">cURL</button>
             <button class="btn btn-secondary btn-sm" onclick="downloadJson()" title="导出 JSON">💾</button>
@@ -629,7 +641,9 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <!-- Scripts -->
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/health-views.js?v=20261017-ui7"></script>
+  <script src="/static/js/health-ui.js?v=20261017-ui7"></script>
+  <script src="/static/js/app.js?v=20261017-ui7"></script>
   <script>
     function toggleApiKeyVisibility() {
       const input = $('apiKeyInput');

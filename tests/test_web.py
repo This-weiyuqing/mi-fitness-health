@@ -41,7 +41,7 @@ def test_proxy_forwarding():
     app.config["TESTING"] = True
     client = app.test_client()
 
-    resp = client.get("/proxy/api/summary?start_date=2026-08-30&end_date=2026-08-31")
+    resp = client.get("/proxy/api/summary?start_date=2026-08-30&end_date=2026-08-31", auth=("admin", "mif_sk_secret_test"))
     assert resp.status_code == 200
     assert "X-Upstream-Time-Ms" in resp.headers
     data = resp.get_json()

@@ -9,6 +9,7 @@ Provides a modern dashboard interface and reverse proxy to the backend FastAPI s
 """
 
 import os
+import secrets
 import time
 from pathlib import Path
 
@@ -53,6 +54,12 @@ def create_app(
     ).rstrip("/")
     app.config["API_KEY"] = api_key or os.environ.get("MI_FITNESS_API_KEY")
     app.config["ADMIN_KEY"] = admin_key or os.environ.get("MI_FITNESS_ADMIN_KEY")
+    app.config["WEB_PASSWORD"] = (
+        os.environ.get("MI_FITNESS_WEB_PASSWORD")
+        or app.config["ADMIN_KEY"]
+        or app.config["API_KEY"]
+    )
+    app.config["WEB_ORIGIN"] = os.environ.get("MI_FITNESS_WEB_ORIGIN", "").rstrip("/")
 
     # Persistent HTTP client with 300s timeout (trust_env=False avoids proxy interference on localhost)
     http_client = httpx.Client(trust_env=False, timeout=300.0, follow_redirects=True)
@@ -62,7 +69,26 @@ def create_app(
         # Host 头白名单（防 DNS 重绑定）：默认仅本机域名，环境变量可覆盖
         if not host_allowed(request.host, default_allowed_hosts()):
             return jsonify({"detail": "Host not allowed"}), 403
+        password = app.config["WEB_PASSWORD"]
+        if password:
+            auth = request.authorization
+            if not (
+                auth and auth.type == "basic" and auth.username == "admin"
+                and secrets.compare_digest((auth.password or "").encode("utf-8"), password.encode("utf-8"))
+            ):
+                return Response("请使用网页访问密码登录。", status=401,
+                    headers={"WWW-Authenticate": 'Basic realm="Mi Fitness Hub", charset="UTF-8"'},
+                    content_type="text/plain; charset=utf-8")
+        # 浏览器会自动发送 Basic 凭据，仍需拒绝其他网站借用此身份调用代理。
+        origin = request.headers.get("Origin")
+        if origin and origin not in {request.host_url.rstrip("/"), app.config["WEB_ORIGIN"]}:
+            return jsonify({"detail": "Cross-origin request denied"}), 403
         return None
+
+    @app.after_request
+    def _prevent_health_cache(response):
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/")
     def index():
@@ -123,7 +149,7 @@ def create_app(
         forward_headers: dict[str, str] = {}
         for key, value in request.headers.items():
             k_lower = key.lower()
-            if k_lower not in ("host", "content-length", "transfer-encoding"):
+            if k_lower not in ("host", "content-length", "transfer-encoding", "authorization"):
                 forward_headers[key] = value
 
         # Attach API Key (Server env priority, otherwise pass through client key)
@@ -135,6 +161,10 @@ def create_app(
         server_admin_key = app.config["ADMIN_KEY"]
         if server_admin_key:
             forward_headers["X-Admin-Key"] = server_admin_key
+            if clean_subpath.startswith("api/auth/"):
+                # 管理接口独立校验管理员身份，不能被浏览器残留的已吊销查询 Key 阻断。
+                forward_headers = {key: value for key, value in forward_headers.items()
+                                   if key.lower() != "x-api-key"}
 
         body = request.get_data() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
 
@@ -176,6 +206,8 @@ def create_app(
             resp.headers["X-Upstream-Time-Ms"] = str(int(elapsed_ms))
             return resp
 
+    from mi_fitness_mcp.workday_calendar import register_calendar
+    register_calendar(app, assets_path)
     return app
 
 

@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -275,13 +275,68 @@ class Database:
         finally:
             conn.close()
 
-    def insert_daily_activity(self, activity: DailyActivity) -> bool:
+    def insert_records_batch(self, data_type: str, records: list) -> list[bool]:
+        """在一个事务中写入一批记录，失败时整批回滚；复用已有 UPSERT。"""
+        methods = {
+            "daily_activity": self.insert_daily_activity,
+            "sleep": self.insert_sleep_session,
+            "workouts": self.insert_workout,
+            "body_measurements": self.insert_body_measurement,
+            "heart_rate": self.insert_heart_rate_sample,
+            "spo2": self.insert_spo2_sample,
+            "stress": self.insert_stress_sample,
+            "abnormal_heart_beat": self.insert_abnormal_heart_beat_event,
+        }
+        if data_type not in methods:
+            raise ValueError("Unsupported batch data type")
+        if not records:
+            return []
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            owners = {record.user_id for record in records}
+            if len(owners) != 1:
+                raise ValueError("一批健康记录只能属于一个账号")
+            self.assert_single_owner(next(iter(owners)), _connection=conn)
+            result = [methods[data_type](record, _connection=conn) for record in records]
+            conn.commit()
+            return result
+
+    def assert_single_owner(self, user_id: str, region: str | None = None, *, _connection=None) -> None:
+        """本部署的健康库固定绑定一个账号，历史已吊销授权仍参与校验。"""
+        with (self._get_connection() if _connection is None else nullcontext(_connection)) as conn:
+            for table in ("daily_activity", "sleep_sessions", "workouts", "body_measurements",
+                          "heart_rate_samples", "spo2_samples", "stress_samples", "abnormal_heart_beat_events"):
+                # user_id 为索引前缀且不可为空，只需检查两端，避免每批扫描整个历史库。
+                first = conn.execute(f"SELECT user_id FROM {table} ORDER BY user_id LIMIT 1").fetchone()
+                if first:
+                    last = conn.execute(f"SELECT user_id FROM {table} ORDER BY user_id DESC LIMIT 1").fetchone()
+                    if first[0] != user_id or last[0] != user_id:
+                        raise ValueError("健康数据库已绑定其他账号，拒绝混写；请使用原账号")
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_keys'").fetchone():
+                if conn.execute("SELECT 1 FROM api_keys WHERE user_id != ? LIMIT 1", (user_id,)).fetchone():
+                    raise ValueError("健康数据库已绑定其他账号，拒绝混写；请使用原账号")
+                if region is not None and conn.execute(
+                    "SELECT 1 FROM api_keys WHERE region != ? LIMIT 1", (region,)
+                ).fetchone():
+                    raise ValueError("健康数据库已绑定其他地区，拒绝更改数据来源")
+
+    @contextmanager
+    def _write_connection(self, connection, user_id):
+        if connection is not None:
+            yield connection
+        else:
+            with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self.assert_single_owner(user_id, _connection=conn)
+                yield conn
+
+    def insert_daily_activity(self, activity: DailyActivity, *, _connection: sqlite3.Connection | None = None) -> bool:
         """Insert or update daily activity record.
 
         Returns:
             True if record was inserted, False if updated
         """
-        with self._get_connection() as conn:
+        with self._write_connection(_connection, activity.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO daily_activity (
@@ -318,12 +373,13 @@ class Database:
                     activity.active_minutes,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_sleep_session(self, sleep: SleepSession) -> bool:
+    def insert_sleep_session(self, sleep: SleepSession, *, _connection: sqlite3.Connection | None = None) -> bool:
         """Insert or update sleep session record."""
-        with self._get_connection() as conn:
+        with self._write_connection(_connection, sleep.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO sleep_sessions (
@@ -332,6 +388,12 @@ class Database:
                     time_asleep_minutes, time_awake_minutes, sleep_score, is_nap, stages
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, sleep_id) DO UPDATE SET
+                    source_record_id = excluded.source_record_id,
+                    timezone = excluded.timezone,
+                    collected_at = excluded.collected_at,
+                    start_at = excluded.start_at,
+                    end_at = excluded.end_at,
+                    is_nap = excluded.is_nap,
                     duration_minutes = excluded.duration_minutes,
                     time_asleep_minutes = excluded.time_asleep_minutes,
                     time_awake_minutes = excluded.time_awake_minutes,
@@ -359,12 +421,13 @@ class Database:
                     json.dumps([s.model_dump() for s in sleep.stages]),
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_workout(self, workout: Workout) -> bool:
+    def insert_workout(self, workout: Workout, *, _connection: sqlite3.Connection | None = None) -> bool:
         """Insert or update workout record."""
-        with self._get_connection() as conn:
+        with self._write_connection(_connection, workout.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO workouts (
@@ -374,11 +437,21 @@ class Database:
                     max_heart_rate_bpm, avg_pace_sec_per_km, max_pace_sec_per_km, total_steps
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, workout_id) DO UPDATE SET
+                    source_record_id = excluded.source_record_id,
+                    device_id = excluded.device_id,
+                    timezone = excluded.timezone,
+                    collected_at = excluded.collected_at,
+                    activity_type = excluded.activity_type,
+                    start_at = excluded.start_at,
+                    end_at = excluded.end_at,
                     duration_minutes = excluded.duration_minutes,
                     distance_m = excluded.distance_m,
                     calories_kcal = excluded.calories_kcal,
                     avg_heart_rate_bpm = excluded.avg_heart_rate_bpm,
                     max_heart_rate_bpm = excluded.max_heart_rate_bpm,
+                    avg_pace_sec_per_km = excluded.avg_pace_sec_per_km,
+                    max_pace_sec_per_km = excluded.max_pace_sec_per_km,
+                    total_steps = excluded.total_steps,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -404,12 +477,13 @@ class Database:
                     workout.total_steps,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_body_measurement(self, measurement: BodyMeasurement) -> bool:
+    def insert_body_measurement(self, measurement: BodyMeasurement, *, _connection: sqlite3.Connection | None = None) -> bool:
         """Insert or update body measurement record."""
-        with self._get_connection() as conn:
+        with self._write_connection(_connection, measurement.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO body_measurements (
@@ -424,6 +498,10 @@ class Database:
                     body_fat_pct = excluded.body_fat_pct,
                     muscle_mass_kg = excluded.muscle_mass_kg,
                     water_pct = excluded.water_pct,
+                    bone_mass_kg = excluded.bone_mass_kg,
+                    visceral_fat_score = excluded.visceral_fat_score,
+                    basal_metabolism_kcal = excluded.basal_metabolism_kcal,
+                    metabolic_age = excluded.metabolic_age,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -447,11 +525,12 @@ class Database:
                     measurement.metabolic_age,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_heart_rate_sample(self, sample: HeartRateSample) -> bool:
-        with self._get_connection() as conn:
+    def insert_heart_rate_sample(self, sample: HeartRateSample, *, _connection: sqlite3.Connection | None = None) -> bool:
+        with self._write_connection(_connection, sample.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO heart_rate_samples (
@@ -480,11 +559,12 @@ class Database:
                     sample.sample_type,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_spo2_sample(self, sample: SpO2Sample) -> bool:
-        with self._get_connection() as conn:
+    def insert_spo2_sample(self, sample: SpO2Sample, *, _connection: sqlite3.Connection | None = None) -> bool:
+        with self._write_connection(_connection, sample.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO spo2_samples (
@@ -511,11 +591,12 @@ class Database:
                     sample.spo2_pct,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_stress_sample(self, sample: StressSample) -> bool:
-        with self._get_connection() as conn:
+    def insert_stress_sample(self, sample: StressSample, *, _connection: sqlite3.Connection | None = None) -> bool:
+        with self._write_connection(_connection, sample.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO stress_samples (
@@ -544,11 +625,12 @@ class Database:
                     sample.level,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def insert_abnormal_heart_beat_event(self, event: AbnormalHeartBeatEvent) -> bool:
-        with self._get_connection() as conn:
+    def insert_abnormal_heart_beat_event(self, event: AbnormalHeartBeatEvent, *, _connection: sqlite3.Connection | None = None) -> bool:
+        with self._write_connection(_connection, event.user_id) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO abnormal_heart_beat_events (
@@ -578,10 +660,11 @@ class Database:
                     event.duration_seconds,
                 ),
             )
-            conn.commit()
+            if _connection is None:
+                conn.commit()
             return cursor.rowcount > 0
 
-    def update_sync_state(self, data_type: str, last_record_ts: datetime | None = None) -> None:
+    def update_sync_state(self, data_type: str, last_record_ts: datetime | None = None, *, user_id: str | None = None) -> None:
         """Update sync state for a data type."""
         with self._get_connection() as conn:
             conn.execute(
@@ -592,16 +675,17 @@ class Database:
                     last_sync_at = CURRENT_TIMESTAMP,
                     last_record_timestamp = excluded.last_record_timestamp
                 """,
-                (data_type, last_record_ts.isoformat() if last_record_ts else None),
+                (json.dumps([user_id, data_type], separators=(",", ":")) if user_id else data_type,
+                 last_record_ts.isoformat() if last_record_ts else None),
             )
             conn.commit()
 
-    def get_sync_state(self, data_type: str) -> dict[str, Any] | None:
+    def get_sync_state(self, data_type: str, *, user_id: str | None = None) -> dict[str, Any] | None:
         """Get sync state for a data type."""
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM sync_state WHERE data_type = ?",
-                (data_type,),
+                (json.dumps([user_id, data_type], separators=(",", ":")) if user_id else data_type,),
             ).fetchone()
             return dict(row) if row else None
 
@@ -635,12 +719,22 @@ class Database:
                 """
                 SELECT * FROM sleep_sessions
                 WHERE user_id = ?
-                AND substr(start_at, 1, 10) >= ? AND substr(start_at, 1, 10) <= ?
+                AND substr(end_at, 1, 10) >= ? AND substr(end_at, 1, 10) <= ?
                 ORDER BY start_at
                 """,
                 (user_id, start_date, end_date),
             ).fetchall()
-            return [dict(row) for row in rows]
+            records = [dict(row) for row in rows]
+            # 原始会话仍保留；同日已有融合日报时，只呈现其最新版本。
+            latest = {}
+            for record in records:
+                if (record.get("source_record_id") or "").startswith("daily_report:"):
+                    day = record["end_at"][:10]
+                    latest[day] = max(latest.get(day, ""), record.get("collected_at") or "")
+            return [record for record in records if record["end_at"][:10] not in latest or (
+                (record.get("source_record_id") or "").startswith("daily_report:")
+                and (record.get("collected_at") or "") == latest[record["end_at"][:10]]
+            )]
 
     def query_workouts(
         self,
@@ -781,9 +875,9 @@ class Database:
             row = conn.execute(
                 """
                 SELECT
-                    MIN(substr(start_at, 1, 10)) as first_date,
-                    MAX(substr(start_at, 1, 10)) as last_date,
-                    COUNT(DISTINCT substr(start_at, 1, 10)) as days_with_data
+                    MIN(substr(end_at, 1, 10)) as first_date,
+                    MAX(substr(end_at, 1, 10)) as last_date,
+                    COUNT(DISTINCT substr(end_at, 1, 10)) as days_with_data
                 FROM sleep_sessions
                 WHERE user_id = ?
                 """,
@@ -864,9 +958,9 @@ class Database:
                 row = conn.execute(
                     f"""
                     SELECT
-                        MIN(date({date_expr})) as first_date,
-                        MAX(date({date_expr})) as last_date,
-                        COUNT(DISTINCT date({date_expr})) as days_with_data
+                        MIN(substr({date_expr}, 1, 10)) as first_date,
+                        MAX(substr({date_expr}, 1, 10)) as last_date,
+                        COUNT(DISTINCT substr({date_expr}, 1, 10)) as days_with_data
                     FROM {table_name}
                     WHERE user_id = ?
                     """,

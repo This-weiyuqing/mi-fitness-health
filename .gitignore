@@ -42,3 +42,26 @@ config.json
 *.db-*
 *.zip
 .backup/
+
+# NAS 私有运行数据与本机验证产物
+.env.*
+!.env.example
+state/
+secrets/
+calendar/
+*.tar
+*.tar.gz
+*.pem
+*.key
+*.p12
+*.pfx
+*.jsonl
+*.jsonl.gz
+*.xlsx
+*.pdf
+artifacts/
+test-results/
+deploy/releases/
+deploy/private/
+maintenance/legacy-outputs/
+*.local.json

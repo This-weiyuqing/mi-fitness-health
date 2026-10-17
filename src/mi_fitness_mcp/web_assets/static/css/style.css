@@ -67,8 +67,8 @@
   --shadow-glow-indigo: 0 0 20px -2px var(--accent-indigo-glow);
 
   /* Glassmorphism & Blurs */
-  --backdrop-blur: blur(16px);
-  --backdrop-blur-sm: blur(8px);
+  --backdrop-blur: none;
+  --backdrop-blur-sm: none;
 
   /* Transitions & Animation Timings */
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1329,6 +1329,8 @@ code, pre {
 
 .inspector-body {
   flex: 1;
+  min-height: 0;
+  contain: layout paint;
   padding: 14px 18px;
   background: var(--bg-code);
   overflow-y: auto;
@@ -1339,6 +1341,12 @@ code, pre {
   white-space: pre-wrap;
   word-break: break-all;
   position: relative;
+}
+
+.inspector-preview-notice {
+  white-space: normal;
+  color: var(--text-muted);
+  margin-bottom: 12px;
 }
 
 /* JSON Viewer Syntax Highlighting */

@@ -6,7 +6,6 @@ import logging
 import os
 import random
 import struct
-from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -315,10 +314,14 @@ class MiFitnessCloudAdapter(DataAdapter):
                 payload["next_key"] = next_key
 
             result = await self._request(base_url, "/app/v1/data/get_fitness_data_by_time", payload)
-            items.extend(result.get("data_list", []))
-            if not result.get("has_more") or not result.get("next_key"):
+            if not isinstance(result.get("data_list"), list):
+                raise ValueError("Invalid Mi Fitness data response")
+            items.extend(result["data_list"])
+            if not result.get("has_more"):
                 break
-            candidate = str(result.get("next_key"))
+            candidate = result.get("next_key")
+            if not isinstance(candidate, str) or not candidate:
+                raise ValueError("Invalid Mi Fitness pagination cursor")
             if candidate in seen_keys:
                 raise RuntimeError("Mi Fitness pagination cursor loop detected")
             seen_keys.add(candidate)
@@ -402,10 +405,14 @@ class MiFitnessCloudAdapter(DataAdapter):
             result = await self._request(
                 base_url, "/app/v1/data/get_sport_records_by_time", payload
             )
-            items.extend(result.get("sport_records", []))
-            if not result.get("has_more") or not result.get("next_key"):
+            if not isinstance(result.get("sport_records"), list):
+                raise ValueError("Invalid Mi Fitness sport response")
+            items.extend(result["sport_records"])
+            if not result.get("has_more"):
                 break
-            candidate = str(result.get("next_key"))
+            candidate = result.get("next_key")
+            if not isinstance(candidate, str) or not candidate:
+                raise ValueError("Invalid Mi Fitness sport pagination cursor")
             if candidate in seen_keys:
                 raise RuntimeError("Mi Fitness sport pagination cursor loop detected")
             seen_keys.add(candidate)
@@ -447,60 +454,67 @@ class MiFitnessCloudAdapter(DataAdapter):
             return
             yield
 
-        records = await self._fetch_key("steps", start_date, end_date)
-        daily: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {
-                "steps": 0,
-                "distance_m": 0.0,
-                "active_kcal": 0.0,
-                "timezone": "UTC",
-                "collected_at": None,
-            }
-        )
-        for item in records:
-            payload = self._parse_value(item)
-            collected_at = self._record_datetime(item)
-            date_str = collected_at.strftime("%Y-%m-%d")
-            daily[date_str]["steps"] += int(payload.get("steps", 0))
-            daily[date_str]["distance_m"] += float(payload.get("distance", 0))
-            daily[date_str]["active_kcal"] += float(payload.get("calories", 0))
-            daily[date_str]["timezone"] = item.get("zone_name") or daily[date_str]["timezone"]
-            if (
-                daily[date_str]["collected_at"] is None
-                or collected_at > daily[date_str]["collected_at"]
-            ):
-                daily[date_str]["collected_at"] = collected_at
+        # 多来源分钟明细有重叠，使用小米已融合的日报，不自行累加或猜测去重。
+        reports: dict[str, dict[str, tuple[tuple[int, int], dict]]] = {}
+        tz = self._request_timezone()
+        for key in ("steps", "calories"):
+            by_date: dict[str, tuple[tuple[int, int], dict]] = {}
+            for item in await self._fetch_daily_reports(key, start_date, end_date):
+                date_str = datetime.fromtimestamp(int(item["time"]), tz=tz).date().isoformat()
+                if not start_date <= date_str <= end_date:
+                    continue
+                rank = (int(item.get("update_time", 0)), int(item.get("watermark", 0)))
+                existing = by_date.get(date_str)
+                if existing is None or rank > existing[0]:
+                    by_date[date_str] = (rank, item)
+                elif rank == existing[0] and self._parse_value(item) != self._parse_value(existing[1]):
+                    raise ValueError(f"Conflicting daily reports for {key} on {date_str}")
+            reports[key] = by_date
 
-        calorie_records = await self._fetch_key("calories", start_date, end_date)
-        calorie_totals: dict[str, float] = defaultdict(float)
-        for item in calorie_records:
-            payload = self._parse_value(item)
-            collected_at = self._record_datetime(item)
-            date_str = collected_at.strftime("%Y-%m-%d")
-            calorie_totals[date_str] += float(payload.get("calories", 0))
-            daily[date_str]["timezone"] = item.get("zone_name") or daily[date_str]["timezone"]
-            if (
-                daily[date_str]["collected_at"] is None
-                or collected_at > daily[date_str]["collected_at"]
-            ):
-                daily[date_str]["collected_at"] = collected_at
-
-        for date_str, total in calorie_totals.items():
-            daily[date_str]["active_kcal"] = total
-
-        for date_str, values in sorted(daily.items()):
+        for date_str in sorted(set(reports["steps"]) | set(reports["calories"])):
+            if date_str not in reports["steps"] or date_str not in reports["calories"]:
+                raise ValueError(f"Incomplete daily report on {date_str}")
+            step_item = reports["steps"][date_str][1]
+            step_payload = self._parse_value(step_item)
+            calorie_payload = self._parse_value(reports["calories"][date_str][1])
+            if not {"steps", "distance"} <= step_payload.keys() or "calories" not in calorie_payload:
+                raise ValueError(f"Incomplete daily report values on {date_str}")
             yield DailyActivity(
                 id=f"mi_fitness_activity_{date_str}",
                 provider="mi_fitness",
                 source_type="cloud_session",
+                source_record_id=f"daily_report:{date_str}",
                 user_id=self.user_id or "unknown",
-                timezone=str(values["timezone"]),
-                collected_at=values["collected_at"],
+                timezone="Asia/Shanghai" if self.region in ("", "cn") else "UTC",
+                collected_at=datetime.fromtimestamp(int(step_item["time"]), tz=tz),
                 date=date_str,
-                steps=int(values["steps"]),
-                distance_m=float(values["distance_m"]),
-                active_kcal=float(values["active_kcal"]),
+                steps=int(step_payload["steps"]),
+                distance_m=float(step_payload["distance"]),
+                active_kcal=float(calorie_payload["calories"]),
             )
+
+    async def _fetch_daily_reports(self, key: str, start_date: str, end_date: str) -> list[dict]:
+        base_url = "https://hlth.io.mi.com" if self.region in ("", "cn") else f"https://{self.region}.hlth.io.mi.com"
+        start_time, end_time = self._date_range_to_timestamps(start_date, end_date)
+        records: list[dict] = []
+        next_key = None
+        seen_keys: set[str] = set()
+        for _ in range(self.max_pages):
+            arguments = {"key": key, "tag": "daily_report", "start_time": start_time, "end_time": end_time, "limit": 100}
+            if next_key is not None:
+                arguments["next_key"] = next_key
+            result = await self._request(base_url, "/app/v1/data/get_aggregated_fitness_data_by_time", arguments)
+            if not isinstance(result.get("data_list"), list):
+                raise ValueError("Invalid daily report response")
+            records.extend(result["data_list"])
+            if not result.get("has_more"):
+                return records
+            candidate = result.get("next_key")
+            if not isinstance(candidate, str) or not candidate or candidate in seen_keys:
+                raise ValueError("Invalid daily report pagination cursor")
+            seen_keys.add(candidate)
+            next_key = candidate
+        raise RuntimeError("Daily report pagination exceeded safety limit")
 
     async def iter_sleep_sessions(
         self,
@@ -511,68 +525,53 @@ class MiFitnessCloudAdapter(DataAdapter):
             return
             yield
 
-        records = await self._fetch_key("sleep", start_date, end_date)
-        for item in records:
-            payload = self._parse_value(item)
-            zone_offset = int(item.get("zone_offset", 0) or 0)
-            sleep_start = (
-                payload.get("bedtime")
-                or payload.get("device_bedtime")
-                or payload.get("bed_timestamp")
-            )
-            sleep_end = (
-                payload.get("wake_up_time")
-                or payload.get("device_wake_up_time")
-                or payload.get("out_bed_timestamp")
-                or item.get("time")
-            )
-            if not sleep_start or not sleep_end:
+        tz = self._request_timezone()
+        reports: dict[str, tuple[tuple[int, int], dict]] = {}
+        for item in await self._fetch_daily_reports("sleep", start_date, end_date):
+            day = datetime.fromtimestamp(int(item["time"]), tz=tz).date().isoformat()
+            if not start_date <= day <= end_date:
                 continue
+            rank = (int(item.get("update_time", 0)), int(item.get("watermark", 0)))
+            existing = reports.get(day)
+            if existing is None or rank > existing[0]:
+                reports[day] = (rank, item)
+            elif rank == existing[0] and self._parse_value(item) != self._parse_value(existing[1]):
+                raise ValueError(f"Conflicting sleep daily reports on {day}")
 
-            start_at = self._timestamp_to_datetime(sleep_start, zone_offset)
-            end_at = self._timestamp_to_datetime(sleep_end, zone_offset)
-            duration_minutes = int(
-                payload.get("duration") or max(0, (int(sleep_end) - int(sleep_start)) // 60)
-            )
-            awake_minutes = int(
-                payload.get("awake_duration") or payload.get("sleep_awake_duration") or 0
-            )
-            asleep_minutes = max(0, duration_minutes - awake_minutes)
-
-            stages: list[SleepStage] = []
-            for segment in payload.get("items", []) or []:
-                try:
-                    seg_start = int(segment.get("start_time", 0))
-                    seg_end = int(segment.get("end_time", 0))
-                    minutes = max(0, (seg_end - seg_start) // 60)
-                    if minutes:
-                        stages.append(
-                            SleepStage(
-                                stage=self._sleep_stage_name(segment.get("state")), minutes=minutes
-                            )
-                        )
-                except Exception:
-                    continue
-
-            sleep_id = f"{item.get('sid', self.user_id)}_{item.get('time', int(sleep_end))}"
-            yield SleepSession(
-                id=f"mi_fitness_sleep_{sleep_id}",
-                provider="mi_fitness",
-                source_type="cloud_session",
-                source_record_id=str(item.get("time", "")) or None,
-                user_id=self.user_id or "unknown",
-                timezone=item.get("zone_name") or "UTC",
-                collected_at=self._record_datetime(item),
-                sleep_id=sleep_id,
-                start_at=start_at,
-                end_at=end_at,
-                duration_minutes=duration_minutes,
-                time_asleep_minutes=asleep_minutes,
-                time_awake_minutes=awake_minutes,
-                sleep_score=self._optional_int(payload.get("score") or payload.get("sleep_score")),
-                is_nap=bool(payload.get("is_nap", False)),
-                stages=stages,
-            )
+        for day, (_, item) in sorted(reports.items()):
+            payload = self._parse_value(item)
+            segments = payload.get("segment_details")
+            if not isinstance(segments, list):
+                raise ValueError(f"Incomplete sleep daily report on {day}")
+            if sum(int(segment["duration"]) for segment in segments) != int(payload["total_duration"]):
+                raise ValueError(f"Sleep daily report duration mismatch on {day}")
+            for index, segment in enumerate(sorted(segments, key=lambda s: int(s["bedtime"]))):
+                # 日报 duration 已是实际睡眠分钟，不能再次减清醒时间。
+                duration = int(segment["duration"])
+                sleep_id = f"daily_report_{day}_{index}"
+                stages = [
+                    SleepStage(stage=stage, minutes=int(segment[key]))
+                    for stage, key in (("deep", "sleep_deep_duration"), ("light", "sleep_light_duration"), ("rem", "sleep_rem_duration"))
+                    if key in segment
+                ]
+                yield SleepSession(
+                    id=f"mi_fitness_sleep_{sleep_id}",
+                    provider="mi_fitness",
+                    source_type="cloud_session",
+                    source_record_id=f"daily_report:{day}",
+                    user_id=self.user_id or "unknown",
+                    timezone="Asia/Shanghai" if self.region in ("", "cn") else "UTC",
+                    collected_at=datetime.fromtimestamp(int(item.get("update_time") or item["time"]), tz=tz),
+                    sleep_id=sleep_id,
+                    start_at=datetime.fromtimestamp(int(segment["bedtime"]), tz=tz),
+                    end_at=datetime.fromtimestamp(int(segment["wake_up_time"]), tz=tz),
+                    duration_minutes=duration,
+                    time_asleep_minutes=duration,
+                    time_awake_minutes=int(segment.get("sleep_awake_duration", 0)),
+                    sleep_score=self._optional_int(payload.get("sleep_score")) if len(segments) == 1 else None,
+                    is_nap=bool(segment.get("is_nap", False)),
+                    stages=stages,
+                )
 
     async def iter_workouts(
         self,

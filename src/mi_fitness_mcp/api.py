@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import secrets
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -85,6 +86,7 @@ class UserContext:
 
 
 def _build_context(db: Database, config, user_id: str, pass_token: str, region: str) -> UserContext:
+    _assert_data_owner(db, user_id, region)
     adapter = MiFitnessCloudAdapter(user_id=user_id, pass_token=pass_token, region=region)
     adapter.http_timeout = config.http_timeout_seconds
     adapter.request_retries = config.request_retries
@@ -145,6 +147,8 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.default_context = default_context
     app.state.contexts = {}
+    app.state.key_contexts = {}
+    app.state.key_context_lock = threading.RLock()
     app.state.sync_tasks = {}
     app.state.qr_sessions = {}
     try:
@@ -243,22 +247,33 @@ def _resolve_context(request: Request) -> UserContext:
                 "SELECT user_id, pass_token, region FROM api_keys WHERE key = ? AND revoked = 0",
                 (header,),
             ).fetchone()
+        if row is None:
+            state.key_contexts.pop(header, None)
+            raise HTTPException(status_code=401, detail="Invalid or revoked API key")
         if row is not None:
-            # passToken 优先从系统 keyring 读取；为空则回退 DB 列（无 keyring 环境的降级存储）
-            pass_token = load_api_key_secret(header) or row["pass_token"]
-            if not pass_token:
-                raise HTTPException(status_code=401, detail="API key credentials unavailable")
-            cache_key = (row["user_id"], pass_token, row["region"])
-            ctx = state.contexts.get(cache_key)
-            if ctx is None:
-                ctx = _build_context(state.db, state.config, *cache_key)
-                state.contexts[cache_key] = ctx
-            with db._get_connection() as conn:
-                conn.execute(
-                    "UPDATE api_keys SET last_used_at = ? WHERE key = ?",
-                    (datetime.now(UTC).isoformat(), header),
-                )
-                conn.commit()
+            with state.key_context_lock:
+                # 每次仍检查数据库吊销状态；短期复用上下文，避免每个请求重复执行昂贵的解密。
+                now = time.monotonic()
+                identity = (row["user_id"], row["region"], row["pass_token"])
+                cached = state.key_contexts.get(header)
+                if cached and cached["expires"] > now and cached["identity"] == identity:
+                    return cached["context"]
+                # passToken 优先从系统 keyring 读取；为空则回退 DB 列（无 keyring 环境的降级存储）
+                pass_token = load_api_key_secret(header) or row["pass_token"]
+                if not pass_token:
+                    raise HTTPException(status_code=401, detail="API key credentials unavailable")
+                cache_key = (row["user_id"], pass_token, row["region"])
+                ctx = state.contexts.get(cache_key)
+                if ctx is None:
+                    ctx = _build_context(state.db, state.config, *cache_key)
+                    state.contexts[cache_key] = ctx
+                state.key_contexts[header] = {"expires": now + 60, "identity": identity, "context": ctx}
+                with db._get_connection() as conn:
+                    conn.execute(
+                        "UPDATE api_keys SET last_used_at = ? WHERE key = ?",
+                        (datetime.now(UTC).isoformat(), header),
+                    )
+                    conn.commit()
     if ctx is None or ctx.query_service is None:
         raise HTTPException(status_code=503, detail="Server not configured")
     return ctx
@@ -302,6 +317,13 @@ def _query_service(request: Request) -> QueryService:
 # ---------------------------------------------------------------- Key 管理
 
 
+def _assert_data_owner(db: Database, user_id: str, region: str, *, connection=None) -> None:
+    try:
+        db.assert_single_owner(user_id, region, _connection=connection)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 class CreateKeyRequest(BaseModel):
     user_id: str
     pass_token: str
@@ -312,8 +334,10 @@ class CreateKeyRequest(BaseModel):
 def _create_key_record(db: Database, user_id: str, pass_token: str, region: str, label: str | None) -> str:
     key = "mif_sk_" + secrets.token_hex(20)
     # passToken 存系统 keyring（加密）；keyring 不可用才降级写 DB 明文列
-    stored = store_api_key_secret(key, pass_token)
     with db._get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _assert_data_owner(db, user_id, region, connection=conn)
+        stored = store_api_key_secret(key, pass_token)
         conn.execute(
             "INSERT INTO api_keys (key, label, user_id, pass_token, region, created_at) VALUES (?,?,?,?,?,?)",
             (key, label, user_id, "" if stored else pass_token, region, datetime.now(UTC).isoformat()),
@@ -384,6 +408,8 @@ async def revoke_key(key_prefix: str, request: Request) -> dict:
         matches = [r["key"] for r in rows if r["key"] == key_prefix or r["key"].startswith(key_prefix)]
         if not matches:
             raise HTTPException(status_code=404, detail="没有匹配的 Key（可用完整 Key 或唯一前缀）")
+        if len(matches) != 1:
+            raise HTTPException(status_code=409, detail="前缀不唯一，请提供更长的唯一前缀")
         for k in matches:
             conn.execute("UPDATE api_keys SET revoked = 1 WHERE key = ?", (k,))
             delete_api_key_secret(k)
@@ -465,44 +491,45 @@ async def qr_poll(token: str, request: Request) -> dict:
     sess = state.qr_sessions.get(token)
     if sess is None:
         raise HTTPException(status_code=404, detail="Unknown qr_token")
-    if sess["status"] == "confirmed":
-        return {"status": "confirmed", "api_key": sess.get("api_key"), "user_id": sess.get("user_id")}
-    if time.time() - sess["created_at"] > sess["expires_in"] + 10:
-        sess["status"] = "expired"
-        return {"status": "expired"}
+    async with sess.setdefault("poll_lock", asyncio.Lock()):
+        if sess["status"] == "confirmed":
+            return {"status": "confirmed", "api_key": sess.get("api_key"), "user_id": sess.get("user_id")}
+        if time.time() - sess["created_at"] > sess["expires_in"] + 10:
+            sess["status"] = "expired"
+            return {"status": "expired"}
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(sess["lp"])
-    except httpx.HTTPError:
-        return {"status": "waiting"}
-    if resp.status_code != 200:
-        return {"status": "waiting"}
-    text = resp.text
-    if text.startswith(LOGIN_PREFIX):
-        text = text[len(LOGIN_PREFIX) :]
-    try:
-        body = json.loads(text)
-    except json.JSONDecodeError:
-        return {"status": "waiting"}
-    if not (body.get("code") == 0 and body.get("userId")):
-        return {"status": "waiting"}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(sess["lp"])
+        except httpx.HTTPError:
+            return {"status": "waiting"}
+        if resp.status_code != 200:
+            return {"status": "waiting"}
+        text = resp.text
+        if text.startswith(LOGIN_PREFIX):
+            text = text[len(LOGIN_PREFIX) :]
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError:
+            return {"status": "waiting"}
+        if not (body.get("code") == 0 and body.get("userId")):
+            return {"status": "waiting"}
 
-    user_id = str(body["userId"])
-    pass_token = body.get("passToken", "")
-    if not pass_token:
+        user_id = str(body["userId"])
+        pass_token = body.get("passToken", "")
+        if not pass_token:
+            sess["status"] = "confirmed"
+            return {
+                "status": "confirmed",
+                "user_id": user_id,
+                "api_key": None,
+                "note": "小米未在扫码结果中返回 passToken，请改用 POST /api/auth/keys 手动发放",
+            }
+        key = _create_key_record(state.db, user_id, pass_token, sess["region"], "qr-login")
         sess["status"] = "confirmed"
-        return {
-            "status": "confirmed",
-            "user_id": user_id,
-            "api_key": None,
-            "note": "小米未在扫码结果中返回 passToken，请改用 POST /api/auth/keys 手动发放",
-        }
-    key = _create_key_record(state.db, user_id, pass_token, sess["region"], "qr-login")
-    sess["status"] = "confirmed"
-    sess["api_key"] = key
-    sess["user_id"] = user_id
-    return {"status": "confirmed", "api_key": key, "user_id": user_id}
+        sess["api_key"] = key
+        sess["user_id"] = user_id
+        return {"status": "confirmed", "api_key": key, "user_id": user_id}
 
 
 # ---------------------------------------------------------------- 数据接口
@@ -561,6 +588,8 @@ class SyncRequest(BaseModel):
 async def _run_sync(ctx: UserContext, config, arguments: dict) -> dict:
     sync_service = ctx.sync_service
     adapter = ctx.adapter
+    if sync_service is not None:
+        _assert_data_owner(sync_service.db, ctx.user_id, ctx.region)
     if sync_service is None or adapter is None:
         raise HTTPException(status_code=503, detail="Sync service not initialized")
     if not adapter.is_connected() and not await adapter.connect():

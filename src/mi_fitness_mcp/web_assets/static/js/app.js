@@ -15,6 +15,11 @@ const state = {
   syncTypes: ['daily_activity', 'heart_rate', 'sleep', 'workouts', 'body_measurements', 'spo2', 'stress', 'abnormal_heart_beat'],
   lastResponse: null,
   lastRequestInfo: null,
+  overviewRequestId: 0,
+  inspectorRequestId: 0,
+  healthRequestId: 0,
+  healthViews: {},
+  healthController: null,
 };
 
 // DOM Utilities
@@ -46,21 +51,21 @@ function setDatePreset(type) {
   if (type === 'today') {
     start = today;
   } else if (type === 'yesterday') {
-    start = new Date(Date.now() - 86400000);
-    today.setDate(today.getDate() - 1);
+    start.setDate(today.getDate() - 1);
   } else if (type === '7d') {
-    start = new Date(Date.now() - 7 * 86400000);
+    start.setDate(today.getDate() - 6);
   } else if (type === '30d') {
-    start = new Date(Date.now() - 30 * 86400000);
+    start.setDate(today.getDate() - 29);
   } else if (type === 'month') {
     start = new Date(today.getFullYear(), today.getMonth(), 1);
   }
   
   $('startDate').value = formatDate(start);
-  $('endDate').value = formatDate(type === 'yesterday' ? start : new Date());
+  $('endDate').value = formatDate(today);
   
   const el = $(`preset-${type}`);
   if (el) el.classList.add('active');
+  return reloadActiveView();
 }
 
 const getSd = () => $('startDate').value;
@@ -129,6 +134,8 @@ function showToast(title, desc = '', type = 'info', duration = 3500) {
 
 // Tab Switching
 function switchTab(tabId) {
+  invalidateHealthQuery();
+  clearInspector();
   state.activeTab = tabId;
   
   $$('.nav-item').forEach(item => {
@@ -138,6 +145,7 @@ function switchTab(tabId) {
   $$('.tab-pane').forEach(pane => {
     pane.classList.toggle('active', pane.id === `tab-${tabId}`);
   });
+  return reloadActiveView();
 }
 
 // API Communication & Proxy Handler
@@ -150,17 +158,24 @@ function getHeaders() {
   return headers;
 }
 
-async function api(method, path, body = null) {
+async function api(method, path, body = null, view = {}) {
   const startTime = performance.now();
   const url = '/proxy' + path;
   
-  updateInspectorHeader(method, path, 'pending', '请求中…');
-  $('inspectorBody').innerHTML = `<div class="inspector-empty-state"><div class="spinner"></div><div>正在通过 Flask 代理请求后端...</div></div>`;
+  const inspectorRequestId = view.inspect !== false && (!view.isCurrent || view.isCurrent())
+    ? ++state.inspectorRequestId : null;
+  const canInspect = () => inspectorRequestId !== null && inspectorRequestId === state.inspectorRequestId
+    && (!view.isCurrent || view.isCurrent());
+  if (canInspect()) {
+    updateInspectorHeader(method, path, 'pending', '请求中…');
+    $('inspectorBody').innerHTML = `<div class="inspector-empty-state"><div class="spinner"></div><div>正在通过 Flask 代理请求后端...</div></div>`;
+  }
 
   try {
     const options = {
       method,
       headers: getHeaders(),
+      ...(view.signal ? {signal: view.signal} : {}),
     };
     if (body) {
       options.body = JSON.stringify(body);
@@ -177,30 +192,35 @@ async function api(method, path, body = null) {
       // plain text
     }
 
-    state.lastResponse = jsonObj || text;
-    state.lastRequestInfo = {
-      method,
-      path,
-      url,
-      status: resp.status,
-      latency,
-      headers: options.headers,
-      body,
-    };
+    if (canInspect()) {
+      state.lastResponse = jsonObj ?? text;
+      state.lastRequestInfo = {
+        method,
+        path,
+        url,
+        status: resp.status,
+        latency,
+        headers: options.headers,
+        body,
+      };
 
-    updateInspectorHeader(method, path, resp.ok ? 'ok' : 'err', `HTTP ${resp.status}`, latency);
-    renderJsonViewer(state.lastResponse);
+      updateInspectorHeader(method, path, resp.ok ? 'ok' : 'err', `HTTP ${resp.status}`, latency);
+      renderJsonViewer(state.lastResponse);
+    }
 
     if (!resp.ok) {
-      showToast(`请求失败: HTTP ${resp.status}`, jsonObj?.error || jsonObj?.detail || '请查看控制台输出', 'error');
+      if (canInspect()) showToast(`请求失败: HTTP ${resp.status}`, jsonObj?.error || jsonObj?.detail || '请查看控制台输出', 'error');
+      return null;
     }
 
     return jsonObj;
   } catch (err) {
     const latency = Math.round(performance.now() - startTime);
-    updateInspectorHeader(method, path, 'err', '网络错误', latency);
-    $('inspectorBody').innerHTML = `<div style="color:var(--status-error);padding:12px;">❌ 代理网络连接错误: ${err.message}<br><br>💡 请检查:<br>1. Python FastAPI 是否在 127.0.0.1:8321 运行<br>2. Flask 代理是否正常监听</div>`;
-    showToast('代理连接失败', '无法连接到后端服务，请确认端口与服务状态', 'error');
+    if (canInspect()) {
+      updateInspectorHeader(method, path, 'err', '网络错误', latency);
+      $('inspectorBody').textContent = `代理网络连接错误: ${err.message}`;
+      showToast('代理连接失败', '无法连接到后端服务，请确认端口与服务状态', 'error');
+    }
     return null;
   }
 }
@@ -225,7 +245,15 @@ function renderJsonViewer(data) {
   }
 
   const jsonStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  $('inspectorBody').innerHTML = highlightJson(jsonStr);
+  renderInspectorPreview(jsonStr);
+}
+
+function renderInspectorPreview(text, prefix = '') {
+  // 只限制页面预览；完整响应仍用于统计、复制及导出。
+  const preview = text.slice(0, 16000).split('\n').slice(0, 200).join('\n');
+  const notice = preview.length < text.length
+    ? '<div class="inspector-preview-notice">大响应预览：最多显示 200 行；复制和导出保留完整响应。</div>' : '';
+  $('inspectorBody').innerHTML = prefix + notice + highlightJson(preview);
 }
 
 function highlightJson(json) {
@@ -260,7 +288,7 @@ function filterInspectorJson(query) {
   const str = JSON.stringify(state.lastResponse, null, 2);
   const lines = str.split('\n');
   const filtered = lines.filter(line => line.toLowerCase().includes(q)).join('\n');
-  $('inspectorBody').innerHTML = `<div style="color:var(--accent-cyan);font-size:11px;margin-bottom:8px;">🔍 匹配到 ${lines.filter(l => l.toLowerCase().includes(q)).length} 行:</div>` + highlightJson(filtered || '未找到匹配项');
+  renderInspectorPreview(filtered || '未找到匹配项', `<div style="color:var(--accent-cyan);font-size:11px;margin-bottom:8px;">🔍 匹配到 ${lines.filter(l => l.toLowerCase().includes(q)).length} 行:</div>`);
 }
 
 // Copy & Export Tools
@@ -310,54 +338,98 @@ function downloadJson() {
 }
 
 // Overview Dashboard Loader
-async function loadOverview() {
-  showToast('正在加载仪表盘概览…', '', 'info', 1500);
-  const summaryPromise = api('GET', getRangeQuery('/api/summary'));
-  const hrPromise = api('GET', getRangeQuery('/api/heart-rate') + '&sample_type=resting&limit=1');
-  const sleepPromise = api('GET', getRangeQuery('/api/sleep') + '&include_naps=true');
-  const spo2Promise = api('GET', getRangeQuery('/api/spo2') + '&limit=1');
-  const stressPromise = api('GET', getRangeQuery('/api/stress') + '&limit=1');
+function responseRows(response) {
+  if (Array.isArray(response)) return response;
+  return response?.status === 'ok' && Array.isArray(response.data) ? response.data : [];
+}
 
-  const [summary, hr, sleep, spo2, stress] = await Promise.all([
+function latestRecord(rows, field) {
+  return rows.reduce((latest, row) => !latest || String(row[field] || '') > String(latest[field] || '') ? row : latest, null);
+}
+
+function displayNumber(value, format = String) {
+  return typeof value === 'number' && Number.isFinite(value) ? format(value) : '--';
+}
+
+function numericValues(rows, field) {
+  return rows.map(row => row[field]).filter(value => typeof value === 'number' && Number.isFinite(value));
+}
+
+function aggregateValue(rows, field, average = false) {
+  const values = numericValues(rows, field);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / (average ? values.length : 1) : null;
+}
+
+function sleepDays(rows) {
+  const days = new Map();
+  rows.forEach(row => {
+    const stamp = Date.parse(row.end_at);
+    if (!Number.isFinite(stamp) || !Number.isFinite(row.duration_minutes)) return;
+    const day = new Date(stamp + 8 * 3600000).toISOString().slice(0, 10);
+    days.set(day, (days.get(day) || 0) + row.duration_minutes);
+  });
+  return days;
+}
+
+async function loadOverview() {
+  const requestId = ++state.overviewRequestId;
+  showToast('正在加载仪表盘概览…', '', 'info', 1500);
+  ['statSteps', 'statCalories', 'statDistance', 'statHr', 'statSleep', 'statSpo2', 'statStress'].forEach(id => {
+    $(id).textContent = '--';
+  });
+  const currentView = {isCurrent: () => requestId === state.overviewRequestId && state.activeTab === 'overview'};
+  const summaryPromise = api('GET', getRangeQuery('/api/summary'), null, currentView);
+  const hrPromise = api('GET', getRangeQuery('/api/heart-rate') + '&sample_type=resting', null, {inspect:false});
+  const sleepPromise = api('GET', getRangeQuery('/api/sleep') + '&include_naps=true', null, {inspect:false});
+  const spo2Promise = api('GET', getRangeQuery('/api/spo2'), null, {inspect:false});
+  const stressPromise = api('GET', getRangeQuery('/api/stress'), null, {inspect:false});
+
+  const responses = await Promise.all([
     summaryPromise, hrPromise, sleepPromise, spo2Promise, stressPromise
   ]);
+  if (requestId !== state.overviewRequestId) return;
+  const [summary, hr, sleep, spo2, stress] = responses.map(responseRows);
+  $('overviewRange').textContent = `${getSd()} 至 ${getEd()}；缺失日期不按 0 计入均值`;
+  $('statActivityCoverage').textContent = `已记录 ${new Set(summary.map(row => row.date)).size} 天`;
+  const days = sleepDays(sleep);
+  $('statSleepCoverage').textContent = `记录 ${days.size} 天 · 含小睡`;
+  $('statHrCoverage').textContent = `样本 ${numericValues(hr, 'bpm').length} 条`;
+  $('statSpo2Coverage').textContent = `样本 ${numericValues(spo2, 'spo2_pct').length} 条`;
 
   if (summary && Array.isArray(summary) && summary.length > 0) {
-    const latest = summary[summary.length - 1];
-    $('statSteps').textContent = latest.steps ? latest.steps.toLocaleString() : '0';
-    $('statCalories').textContent = latest.active_calories ? Math.round(latest.active_calories) : '0';
-    $('statDistance').textContent = latest.distance ? (latest.distance / 1000).toFixed(2) : '0';
+    $('statSteps').textContent = displayNumber(aggregateValue(summary, 'steps'), value => value.toLocaleString());
+    $('statCalories').textContent = displayNumber(aggregateValue(summary, 'active_kcal'), Math.round);
+    $('statDistance').textContent = displayNumber(aggregateValue(summary, 'distance_m'), value => (value / 1000).toFixed(2));
   }
 
   if (hr && Array.isArray(hr) && hr.length > 0) {
-    $('statHr').textContent = hr[0].bpm || '--';
+    $('statHr').textContent = displayNumber(aggregateValue(hr, 'bpm', true), value => String(Math.round(value * 10) / 10));
   }
 
   if (sleep && Array.isArray(sleep) && sleep.length > 0) {
-    const lastSleep = sleep[sleep.length - 1];
-    const totalMinutes = lastSleep.duration_minutes || (lastSleep.end_time - lastSleep.start_time) / 60;
-    const hours = (totalMinutes / 60).toFixed(1);
-    $('statSleep').textContent = isNaN(hours) ? '--' : hours;
+    const minutes = days.size ? [...days.values()].reduce((sum, value) => sum + value, 0) / days.size : null;
+    $('statSleep').textContent = displayNumber(minutes, value => (value / 60).toFixed(1));
   }
 
   if (spo2 && Array.isArray(spo2) && spo2.length > 0) {
-    $('statSpo2').textContent = spo2[0].spo2_value ? `${spo2[0].spo2_value}%` : '--';
+    $('statSpo2').textContent = displayNumber(aggregateValue(spo2, 'spo2_pct', true), value => `${Math.round(value * 10) / 10}%`);
   }
 
   if (stress && Array.isArray(stress) && stress.length > 0) {
-    $('statStress').textContent = stress[0].stress_value || '--';
+    $('statStress').textContent = displayNumber(aggregateValue(stress, 'stress_score', true), value => String(Math.round(value * 10) / 10));
   }
 
-  showToast('仪表盘已刷新', '最新数据已加载', 'success');
+  const failed = responses.some(response => !response || (!Array.isArray(response) && response.status !== 'ok'));
+  showToast(failed ? '部分数据未加载' : '仪表盘已刷新', failed ? '请查看接口错误；未用 0 替代失败数据' : '已按所选日期汇总', failed ? 'warning' : 'success');
 }
 
 // Health Data Queries
 async function querySummary() {
-  const data = await api('GET', getRangeQuery('/api/summary'));
-  renderSummaryVisual(data);
+  return loadHealthView('activity');
 }
 
 function renderSummaryVisual(data) {
+  data = responseRows(data);
   const container = $('summaryVisualContainer');
   if (!container) return;
   if (!data || !Array.isArray(data) || data.length === 0) {
@@ -380,12 +452,12 @@ function renderSummaryVisual(data) {
   `;
 
   data.forEach(item => {
-    const distKm = item.distance ? (item.distance / 1000).toFixed(2) : '0.00';
+    const distKm = displayNumber(item.distance_m, value => (value / 1000).toFixed(2));
     html += `
       <tr>
         <td><strong>${item.date || '--'}</strong></td>
         <td><span class="badge badge-success">👟 ${(item.steps || 0).toLocaleString()} 步</span></td>
-        <td>🔥 ${Math.round(item.active_calories || 0)} kcal</td>
+        <td>🔥 ${displayNumber(item.active_kcal, Math.round)} kcal</td>
         <td>📍 ${distKm} km</td>
       </tr>
     `;
@@ -396,17 +468,15 @@ function renderSummaryVisual(data) {
 }
 
 async function queryHeartRate() {
-  const q = getRangeQuery('/api/heart-rate') + getSelQuery('hrType', 'sample_type') + getLimQuery('hrLimit');
-  await api('GET', q);
+  return loadHealthView('heartrate');
 }
 
 async function querySleep() {
-  const q = getRangeQuery('/api/sleep') + '&include_naps=' + $('napsSelect').value;
-  const data = await api('GET', q);
-  renderSleepTimeline(data);
+  return loadHealthView('sleep');
 }
 
 function renderSleepTimeline(data) {
+  data = responseRows(data);
   const container = $('sleepTimelineWrapper');
   if (!container) return;
   if (!data || !Array.isArray(data) || data.length === 0) {
@@ -414,11 +484,16 @@ function renderSleepTimeline(data) {
     return;
   }
 
-  const latest = data[data.length - 1];
-  const deep = latest.deep_sleep_minutes || 0;
-  const light = latest.light_sleep_minutes || 0;
-  const rem = latest.rem_sleep_minutes || 0;
-  const awake = latest.awake_minutes || 0;
+  const latest = latestRecord(data, 'end_at');
+  if (!Array.isArray(latest.stages) || latest.stages.length === 0) {
+    container.innerHTML = '<p class="panel-subtitle">该记录没有睡眠阶段明细</p>';
+    return;
+  }
+  const stageMinutes = name => latest.stages.reduce((sum, stage) => sum + (stage.stage === name && Number.isFinite(stage.minutes) ? stage.minutes : 0), 0);
+  const deep = stageMinutes('deep');
+  const light = stageMinutes('light');
+  const rem = stageMinutes('rem');
+  const awake = Number.isFinite(latest.time_awake_minutes) ? latest.time_awake_minutes : stageMinutes('awake');
   const total = deep + light + rem + awake || 1;
 
   container.innerHTML = `
@@ -440,24 +515,23 @@ function renderSleepTimeline(data) {
 }
 
 async function queryWorkouts() {
-  await api('GET', getRangeQuery('/api/workouts'));
+  return loadHealthView('workouts');
 }
 
 async function queryBody() {
-  const isLatest = $('latestOnlyCheck').checked;
-  await api('GET', getRangeQuery('/api/body-measurements') + '&latest_only=' + isLatest);
+  return loadHealthView('body');
 }
 
 async function querySpo2() {
-  await api('GET', getRangeQuery('/api/spo2') + getLimQuery('spo2Limit'));
+  return loadHealthView('spo2');
 }
 
 async function queryStress() {
-  await api('GET', getRangeQuery('/api/stress') + getSelQuery('stressLevel', 'level') + getLimQuery('stressLimit'));
+  return loadHealthView('stress');
 }
 
 async function queryAbnormalHr() {
-  await api('GET', getRangeQuery('/api/abnormal-heart-beat'));
+  return loadHealthView('abnormal');
 }
 
 // Metric Series Analytics
@@ -471,6 +545,7 @@ async function queryMetricSeries() {
 }
 
 function renderMetricChart(data, metricName) {
+  data = responseRows(data);
   const container = $('metricChartContainer');
   if (!container) return;
   if (!data || !Array.isArray(data) || data.length === 0) {
@@ -563,8 +638,10 @@ async function triggerSync(background = false) {
   if (background && res && res.sync_id) {
     $('syncIdInput').value = res.sync_id;
     showToast('已获取同步任务 ID', res.sync_id, 'success');
-  } else if (!background && res) {
+  } else if (!background && res?.status === 'ok') {
     showToast('前台同步完成', '健康数据已更新至本地 SQLite', 'success');
+  } else if (res) {
+    showToast(res.status === 'partial' ? '同步部分完成' : '同步未成功', '请查看各数据类型的返回状态', res.status === 'partial' ? 'warning' : 'error');
   }
 }
 
@@ -713,6 +790,7 @@ async function listKeys() {
 }
 
 function renderKeysTable(data) {
+  data = responseRows(data);
   const container = $('keysTableWrapper');
   if (!container) return;
   if (!data || !Array.isArray(data) || data.length === 0) {
@@ -736,14 +814,18 @@ function renderKeysTable(data) {
   `;
 
   data.forEach(k => {
+    const masked = String(k.key_masked || '');
+    const prefix = masked.split('…')[0];
+    const canRevoke = !k.revoked && /^mif_sk_[0-9a-f]+$/.test(prefix);
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     html += `
       <tr>
-        <td><strong>${k.label || '默认'}</strong></td>
-        <td><code>${k.prefix || k.api_key_prefix || 'mif_sk_...'}</code></td>
-        <td>${k.user_id || '--'}</td>
-        <td>${k.created_at || '--'}</td>
+        <td><strong>${escape(k.label || '默认')}</strong></td>
+        <td><code>${escape(masked || '--')}</code></td>
+        <td>${escape(k.user_id || '--')}</td>
+        <td>${escape(k.created_at || '--')}</td>
         <td>
-          <button class="btn btn-danger btn-sm" onclick="revokeKeyByPrefix('${k.prefix || k.api_key_prefix}')">吊销</button>
+          ${canRevoke ? `<button class="btn btn-danger btn-sm" onclick="revokeKeyByPrefix('${prefix}')">吊销</button>` : (k.revoked ? '已吊销' : '--')}
         </td>
       </tr>
     `;
@@ -763,7 +845,8 @@ async function revokeKeyByPrefix(prefix) {
   }
   if (!confirm(`确定要吊销前缀为 ${prefix} 的 API Key 吗？`)) return;
 
-  await api('DELETE', `/api/auth/keys/${encodeURIComponent(prefix)}`);
+  const result = await api('DELETE', `/api/auth/keys/${encodeURIComponent(prefix)}`);
+  if (result?.status !== 'ok') return;
   showToast('Key 吊销指令已发送', '', 'info');
   listKeys();
 }
@@ -791,11 +874,19 @@ async function checkSystemHealth() {
 // Initialization on DOM Ready
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  initHealthViews();
   initDates();
   initApiKeyInput();
   renderSyncPills();
   checkSystemHealth();
   setInterval(checkSystemHealth, 15000);
+  ['startDate', 'endDate'].forEach(id => {
+    $(id).addEventListener('change', () => {
+      $$('.preset-pill').forEach(pill => pill.classList.remove('active'));
+      clearInspector();
+      reloadActiveView();
+    });
+  });
 
   // Bind preset pills
   $$('.preset-pill').forEach(pill => {
