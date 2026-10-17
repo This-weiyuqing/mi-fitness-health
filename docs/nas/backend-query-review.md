@@ -1,6 +1,6 @@
 # 后端汇总与分页：最终审查及交付
 
-日期：2026-10-17。状态：实现、本机验证、各任务审查及最终跨模块审查通过，尚未部署NAS。
+日期：2026-10-17。状态：实现、本机验证、各任务审查及最终跨模块审查通过；2026-10-17 15:25用户交互部署成功。
 
 主目录：D:\CodeProject\mi-fitness-health；分支nas-health；最终产品代码提交317194c（最后一提交仅为QA截图采样修正，产品实现截至6292755，部署脚本截至ecbd485）。本记录提交只更新文档，不改候选镜像、发布包或产品。
 
@@ -64,3 +64,10 @@ Ruling: CSV iteration must use one dedicated worker thread (including SQLite ite
 Ruling: Preserve selected client identity for CSV via a same-origin POST form and export-only proxy adaptation — ordinary attachment links cannot send X-API-Key and returning a full Blob violates bounded browser memory — cost if wrong: a narrowly scoped POST download branch; test auth/Origin/GET compatibility and no Key in URL.
 
 Ruling: For equal-instant body measurements, latest uses the approved time/id DESC order (synthetic tie72.9 vs72.91 now chooses72.91), not the old API's unspecified tie order — freeze the oracle, compare unambiguous fixtures and test ties separately — cost if wrong: one tied measurement may differ from old display; sample set and mean remain unchanged, report explicitly.
+
+
+## 正式部署结果
+
+2026-10-17 15:25:38（北京时间），用户已批准仅更新健康backend/web并在本机输入sudo密码。部署入口exit_code=0，安装器的镜像身份、资源、认证、OpenAPI元数据、只读挂载及worker容器未重建检查通过。后续只读复核覆盖配置SHA256为054b4541a3a2e50d46473061822c637c4694fa210414d05b2b6aa43deabea0d3，与发布包一致；worker状态ok、最近成功日期2026-10-17，calendar目录存在。
+
+backend/web为local/mi-fitness-nas:20261017-summary8，worker为20261017-audit3。网址仍为http://192.168.31.201:18322/，用户名admin、原自设密码。未运行NAS合成/压力/健康导出测试；此前本机性能测量不冒充NAS速度。现有发布包的expected-current.sha256仍锁定升级前配置，用于防重复覆盖，不应直接拿旧包再次安装当前版本。

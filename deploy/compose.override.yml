@@ -1,9 +1,9 @@
-# 保留已授权的局域网绑定，为网页单独设置访问密码。
+# 沿用当前NAS的端口、密码来源和日历挂载，只升级backend/web。
 services:
   backend:
-    image: local/mi-fitness-nas:20261017-audit3
+    image: local/mi-fitness-nas:20261017-summary8
   web:
-    image: local/mi-fitness-nas:20261017-ui7
+    image: local/mi-fitness-nas:20261017-summary8
     environment:
       MI_FITNESS_CALENDAR_DIR: /calendar
       MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,192.168.31.201
