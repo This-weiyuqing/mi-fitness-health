@@ -155,6 +155,8 @@ def create_app(
         # Attach API Key (Server env priority, otherwise pass through client key)
         server_api_key = app.config["API_KEY"]
         if server_api_key:
+            forward_headers = {key: value for key, value in forward_headers.items()
+                               if key.lower() != "x-api-key"}
             forward_headers["X-API-Key"] = server_api_key
 
         # Attach Admin Key if configured
@@ -166,12 +168,22 @@ def create_app(
                 forward_headers = {key: value for key, value in forward_headers.items()
                                    if key.lower() != "x-api-key"}
 
-        body = request.get_data() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
+        parts = clean_subpath.split("/")
+        is_export = (request.method in {"GET", "POST"} and len(parts) == 4
+            and parts[:2] == ["api", "views"] and parts[3] == "export"
+            and parts[2] in {"activity", "heartrate", "sleep", "workouts", "body", "spo2", "stress", "abnormal"})
+        body = request.get_data() if not is_export and request.method in ("POST", "PUT", "PATCH", "DELETE") else None
 
         started = time.perf_counter()
         try:
-            parts = clean_subpath.split("/")
-            if request.method == "GET" and len(parts) == 4 and parts[:2] == ["api", "views"] and parts[3] == "export":
+            if is_export:
+                # 仅导出接受原生下载表单；上游仍为无请求体的只读 GET。
+                export_key = server_api_key or (request.form.get("api_key") if request.method == "POST" else None)
+                if export_key:
+                    forward_headers = {key: value for key, value in forward_headers.items() if key.lower() != "x-api-key"}
+                    forward_headers["X-API-Key"] = export_key
+                if request.method == "POST":
+                    forward_headers = {key: value for key, value in forward_headers.items() if key.lower() != "content-type"}
                 upstream_request = http_client.build_request("GET", target_url, headers=forward_headers)
                 upstream_resp = http_client.send(upstream_request, stream=True)
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 2)

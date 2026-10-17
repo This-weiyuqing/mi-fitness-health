@@ -109,8 +109,18 @@ async function healthPage(kind,page){
 }
 function exportHealthRecords(kind){
   const saved=state.healthViews[kind];if(!saved||!saved.isCurrent())return;
+  const path='/proxy'+healthPath(kind,'/export'),key=getHeaders()['X-API-Key'];
+  if(key){
+    // 原生附件下载通过短暂表单传查询身份，Key 不进入 URL 或长期 DOM。
+    const form=document.createElement('form'),input=document.createElement('input');
+    form.method='POST';form.action=path;form.hidden=true;form.autocomplete='off';
+    input.type='hidden';input.name='api_key';input.value=key;
+    form.appendChild(input);document.body.appendChild(form);
+    try{form.submit();}finally{input.value='';form.remove();}
+    return;
+  }
   const link=document.createElement('a');
-  link.href='/proxy'+healthPath(kind,'/export');link.download='';
+  link.href=path;link.download='';
   document.body.appendChild(link);link.click();link.remove();
 }
 function initHealthViews(){

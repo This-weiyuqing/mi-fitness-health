@@ -5,13 +5,13 @@ const fs=require('node:fs');
 const HealthViews=require('../src/mi_fitness_mcp/web_assets/static/js/health-views.js');
 function summary(kind='stress',number=1,total=21){return {status:'ok',kind,range:{start:'2026-10-15',end:'2026-10-17'},statistics:{count:total,primary_mean:33,primary_min:10,primary_max:60},coverage:1,stride:1,points:[{date:'2026-10-16',values:[33],missing:false}],page:{number,size:10,total,rows:[{timestamp:'2026-10-16T00:00:00Z',stress_score:number}]}};}
 function fixture(){
- const nodes=new Map(),links=[],requests=[],calendars=[];
+ const nodes=new Map(),links=[],forms=[],elements=[],requests=[],calendars=[];
  const get=id=>{if(!nodes.has(id))nodes.set(id,{value:({startDate:'2026-10-15',endDate:'2026-10-17',napsSelect:'true'})[id]||'',textContent:'',innerHTML:'',checked:false,setAttribute(){},classList:{toggle(){},add(){},remove(){}},querySelector(){return get(id+'-table');}});return nodes.get(id);};
- const context=vm.createContext({HealthViews,AbortController,console,performance,URL,document:{getElementById:get,querySelectorAll(){return [];},addEventListener(){},createElement(){const a={click(){links.push(this.href);},remove(){}};return a;},body:{appendChild(){}}},localStorage:{getItem(){return '';},setItem(){}},setTimeout(){},setInterval(){},clearTimeout(){},clearInterval(){},fetch:url=>new Promise(resolve=>{if(url.startsWith('/api/calendar'))calendars.push({url,resolve});else requests.push({url,resolve});})});
+ const context=vm.createContext({HealthViews,AbortController,console,performance,URL,document:{getElementById:get,querySelectorAll(){return [];},addEventListener(){},createElement(tag){const element={tag,children:[],appendChild(child){this.children.push(child);},click(){links.push(this.href);},submit(){forms.push({method:this.method,action:this.action,fields:this.children.map(child=>({name:child.name,value:child.value,type:child.type}))});},remove(){this.removed=true;}};elements.push(element);return element;},body:{appendChild(){}}},localStorage:{getItem(){return '';},setItem(){}},setTimeout(){},setInterval(){},clearTimeout(){},clearInterval(){},fetch:url=>new Promise(resolve=>{if(url.startsWith('/api/calendar'))calendars.push({url,resolve});else requests.push({url,resolve});})});
  for(const name of ['health-ui','app'])vm.runInContext(fs.readFileSync(`src/mi_fitness_mcp/web_assets/static/js/${name}.js`,'utf8'),context);
  vm.runInContext('showToast=()=>{};state.activeTab="stress";',context);
  const reply=(i,p)=>requests[i].resolve({status:200,ok:true,text:async()=>JSON.stringify(p)});
- return {context,get,links,requests,calendars,reply,run:code=>vm.runInContext(code,context)};
+ return {context,get,links,forms,elements,requests,calendars,reply,run:code=>vm.runInContext(code,context)};
 }
 test('test_pagination_fetches_only_page_and_preserves_chart',async()=>{
  const f=fixture(),initial=f.run('loadHealthView("stress")');assert.match(f.requests[0].url,/^\/proxy\/api\/views\/stress\?/);f.reply(0,summary());await initial;
@@ -76,4 +76,15 @@ test('out-of-order overview loads preserve new range values and inspector',async
  const f=fixture();f.run('state.activeTab="overview"');const old=f.run('loadOverview()');f.get('startDate').value='2026-10-16';const current=f.run('loadOverview()');
  f.reply(1,{status:'ok',data:{steps:42}});await current;const inspector=f.get('inspectorBody').innerHTML;
  f.reply(0,{status:'ok',data:{steps:999}});await old;assert.equal(f.get('statSteps').textContent,'42');assert.equal(f.get('inspectorBody').innerHTML,inspector);assert.match(f.get('overviewRange').textContent,/2026-10-16 至 2026-10-17/);
+});
+
+for(const source of ['input','state'])test(`native export submits the selected ${source} key only in a temporary POST form`,async()=>{
+ const f=fixture();
+ f.get('apiKeyInput').value='  synthetic-input-key  ';
+ if(source==='state')f.run('state.apiKey="synthetic-state-key"');
+ const selected=source==='state'?'synthetic-state-key':'synthetic-input-key';
+ const initial=f.run('loadHealthView("stress")');f.reply(0,summary());await initial;
+ f.run('exportHealthRecords("stress")');assert.equal(f.forms.length,1);assert.equal(f.links.length,0);assert.equal(f.requests.length,1);
+ const form=f.forms[0];assert.equal(form.method,'POST');assert.match(form.action,/^\/proxy\/api\/views\/stress\/export\?/);assert.doesNotMatch(form.action,/synthetic|api_key|page=/);assert.deepEqual(form.fields,[{name:'api_key',value:selected,type:'hidden'}]);
+ const node=f.elements.find(element=>element.tag==='form');assert.equal(node.removed,true);assert.equal(node.children[0].value,'');assert.equal(node.autocomplete,'off');
 });
