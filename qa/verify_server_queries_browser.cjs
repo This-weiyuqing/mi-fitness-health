@@ -46,13 +46,16 @@ async function main(){
   for(let n=0;n<100;n++){if(await evaluate("typeof switchTab==='function' && document.readyState==='complete'"))break;await sleep(100);}
   if(process.env.QUERY_QA_SCREENSHOTS_ONLY==='1'){
    await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
-   await evaluate("(async()=>{$('startDate').value='2026-09-18';$('endDate').value='2026-10-17';$('hrLimit').value='';await switchTab('heartrate');})()");
+   await evaluate("(async()=>{$('hrLimit').value='';await setDatePreset('30d');await switchTab('heartrate');})()");
+   assert(await evaluate("$('preset-30d').classList.contains('active')"));
    await sleep(4500);
    for(const theme of ['dark','light']){
-    await evaluate(`state.theme='${theme}';document.documentElement.setAttribute('data-theme','${theme}');`);
+    await evaluate(`state.theme='${theme}';initTheme();`);
+    await sleep(500);
     fs.writeFileSync(path.join(OUT,theme+'.png'),Buffer.from((await send('Page.captureScreenshot',{format:'png'})).data,'base64'));
    }
    await send('Emulation.setDeviceMetricsOverride',{width:390,height:1100,deviceScaleFactor:1,mobile:false});
+   await sleep(500);
    fs.writeFileSync(path.join(OUT,'narrow.png'),Buffer.from((await send('Page.captureScreenshot',{format:'png'})).data,'base64'));
    console.log('PASS: 1440px深浅主题与390px窄屏截图；只重拍截图，未重复性能/整体验证。');return;
   }
@@ -76,12 +79,16 @@ async function main(){
   for(let n=0;n<30;n++){if(await evaluate("Object.keys(state.healthViews.heartrate.model.range.calendar||{}).length>0"))break;await sleep(100);}
   assert(await evaluate("Object.keys(state.healthViews.heartrate.model.range.calendar||{}).length>0"),'日历未载入');
   assert(await evaluate("document.querySelector('#healthView-heartrate svg').innerHTML.includes('#22a06b')"),'非工作日颜色');
+  await evaluate("setDatePreset('30d')");
+  assert(await evaluate("$('preset-30d').classList.contains('active')"));
   for(const theme of ['light','dark']){
    await evaluate(`if(state.theme!=='${theme}')toggleTheme();`);
+   await sleep(500);
    assert.equal(await evaluate("document.documentElement.dataset.theme"),theme);
    const image=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(OUT,theme+'.png'),Buffer.from(image.data,'base64'));
   }
   await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false});
+  await sleep(500);
   fs.writeFileSync(path.join(OUT,'narrow.png'),Buffer.from((await send('Page.captureScreenshot',{format:'png'})).data,'base64'));
   await send('Emulation.clearDeviceMetricsOverride');
   // 手填、扫码state、server优先（独立fixture端口）均使用原生附件，不在浏览器读取CSV。
