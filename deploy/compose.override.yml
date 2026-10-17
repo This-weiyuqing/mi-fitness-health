@@ -9,7 +9,7 @@ services:
       MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,192.168.31.201
       MI_FITNESS_WEB_PASSWORD: ${MI_FITNESS_WEB_PASSWORD:?尚未初始化网页访问密码}
     volumes:
-      - ./calendar:/calendar
+      - ./web/calendar:/calendar
     ports: !override
       - '127.0.0.1:18322:8322'
       - '192.168.31.201:18322:8322'

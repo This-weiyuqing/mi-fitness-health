@@ -11,7 +11,7 @@ import hashlib,sys
 from pathlib import Path
 assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()==Path(sys.argv[2]).read_text().strip(), '现有覆盖配置已变化，停止避免覆盖'
 PY
-[ -d "$target/calendar" ] && [ ! -L "$target/calendar" ] || { echo '日历挂载目录缺失或异常，停止。'; exit 1; }
+[ -d "$target/web/calendar" ] && [ ! -L "$target/web/calendar" ] || { echo '日历挂载目录缺失或异常，停止。'; exit 1; }
 cd "$target"
 compose() { docker compose --project-name mi-fitness-health --env-file .env -f compose.yml -f compose.override.yml "$@"; }
 snapshot() { docker ps -aq --filter label=com.docker.compose.project=mi-fitness-health | sort | while read -r id; do docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Id}} {{.Image}}' "$id"; done | grep -v -E '^(backend|web) ' | sort; }

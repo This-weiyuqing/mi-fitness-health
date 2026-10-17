@@ -8,8 +8,8 @@ services:
       MI_FITNESS_ADMIN_KEY: ${MI_FITNESS_ADMIN_KEY:?需在本地生成管理员密钥}
       MI_FITNESS_ALLOWED_HOSTS: localhost,127.0.0.1,backend
     volumes:
-      - ./state:/state
-      - ./secrets/keyring_master:/run/secrets/keyring_master:ro
+      - ./shared/state:/state
+      - ./backend/secrets/keyring_master:/run/secrets/keyring_master:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8321/', timeout=3).close()"]
       interval: 15s
@@ -49,7 +49,7 @@ services:
     image: local/mi-fitness-nas:20261016
     command: ["worker"]
     volumes:
-      - ./state:/state
+      - ./shared/state:/state
     depends_on:
       backend:
         condition: service_healthy
@@ -67,7 +67,7 @@ services:
     command: ["mcp"]
     profiles: [chatgpt]
     volumes:
-      - ./state/data:/health:ro
+      - ./shared/state/data:/health:ro
     user: '1000:1001'
     read_only: true
     tmpfs:
