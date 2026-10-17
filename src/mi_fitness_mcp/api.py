@@ -18,12 +18,15 @@ login_url 确认 → GET /api/auth/qr/poll 轮询到 confirmed 并自动发放 A
 """
 
 import asyncio
+import csv
+import io
 import json
 import os
 import secrets
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,7 +35,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from mi_fitness_mcp.adapters.mi_fitness_cloud import MiFitnessCloudAdapter
@@ -48,7 +51,9 @@ from mi_fitness_mcp.security import (
 )
 from mi_fitness_mcp.services.query_service import QueryService
 from mi_fitness_mcp.services.sync_service import SyncService
+from mi_fitness_mcp.services.view_query_service import ViewQueryService
 from mi_fitness_mcp.storage import Database
+from mi_fitness_mcp.storage.view_queries import ViewSelection
 
 DATA_TYPES = [
     "daily_activity",
@@ -855,6 +860,164 @@ def get_coverage(
 ) -> dict:
     data = _query_service(request).get_data_coverage(data_types)
     return {"status": "ok", "count": len(data), "data": data}
+
+
+# ---------------------------------------------------------------- 健康视图只读查询
+
+
+def _view_selection(
+    kind: str,
+    start_date: str,
+    end_date: str,
+    sample_type: str | None = None,
+    include_naps: bool = True,
+    pressure_level: str | None = None,
+    latest_only: bool = False,
+    limit: Annotated[int | None, Query(ge=1, le=9223372036854775807)] = None,
+) -> ViewSelection:
+    try:
+        return ViewSelection(kind, start_date, end_date, sample_type or None,
+            include_naps, pressure_level or None, latest_only, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _view_service(request: Request) -> ViewQueryService:
+    context = _resolve_context(request)
+    return ViewQueryService(request.app.state.db, context.user_id)
+
+
+@app.get("/api/views/{kind}")
+def get_view(
+    request: Request,
+    selection: Annotated[ViewSelection, Depends(_view_selection)],
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+) -> dict:
+    return _view_service(request).get_view(selection, page)
+
+
+@app.get("/api/views/{kind}/records")
+def get_view_records(
+    request: Request,
+    selection: Annotated[ViewSelection, Depends(_view_selection)],
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+) -> dict:
+    return _view_service(request).get_page(selection, page)
+
+
+@app.get("/api/overview")
+def get_overview(request: Request, start_date: str, end_date: str) -> dict:
+    # 复用相同日期约束；总览始终读取完整范围。
+    selection = _view_selection("activity", start_date, end_date)
+    return {"status": "ok", "range": {"start": start_date, "end": end_date},
+        "data": _view_service(request).get_overview(selection.start_date, selection.end_date)}
+
+
+# 仅导出既有规范化业务字段；稳定分页 id 以及账号、设备、鉴权字段不进入 CSV。
+VIEW_CSV_COLUMNS = {
+    "activity": [("date", "日期"), ("steps", "步数（步）"), ("distance_m", "距离（米）"),
+        ("active_kcal", "活动热量（kcal）"), ("total_kcal", "总热量（kcal）"),
+        ("floors", "楼层数"), ("active_minutes", "活动时长（分钟）")],
+    "heartrate": [("timestamp", "记录时间"), ("bpm", "心率（bpm）"), ("sample_type", "采样类型")],
+    "sleep": [("sleep_id", "睡眠记录标识"), ("start_at", "入睡时间"), ("end_at", "醒来时间"),
+        ("duration_minutes", "源时长（分钟）"), ("time_asleep_minutes", "源实睡时长（分钟）"),
+        ("time_awake_minutes", "清醒（分钟）"), ("sleep_score", "评分"), ("is_nap", "小睡"),
+        ("stages", "睡眠阶段（源字段）"), ("_asleep", "实睡时长（分钟）"),
+        ("_deep", "深睡（分钟）"), ("_light", "浅睡（分钟）"), ("_rem", "REM（分钟）")],
+    "workouts": [("workout_id", "运动记录标识"), ("activity_type", "运动类型"),
+        ("start_at", "开始时间"), ("end_at", "结束时间"), ("duration_minutes", "时长（分钟）"),
+        ("distance_m", "距离（米）"), ("calories_kcal", "热量（kcal）"),
+        ("avg_heart_rate_bpm", "平均心率（bpm）"), ("max_heart_rate_bpm", "最高心率（bpm）"),
+        ("avg_pace_sec_per_km", "平均配速（秒/公里）"), ("max_pace_sec_per_km", "最快配速（秒/公里）"),
+        ("total_steps", "总步数")],
+    "body": [("timestamp", "测量时间"), ("weight_kg", "体重（kg）"), ("bmi", "BMI"),
+        ("body_fat_pct", "体脂率（%）"), ("muscle_mass_kg", "肌肉量（kg，源字段）"),
+        ("water_pct", "水分（%）"), ("bone_mass_kg", "骨量（kg）"),
+        ("visceral_fat_score", "内脏脂肪等级"), ("basal_metabolism_kcal", "基础代谢（kcal/日）"),
+        ("metabolic_age", "代谢年龄（岁）")],
+    "spo2": [("timestamp", "记录时间"), ("spo2_pct", "血氧（%）")],
+    "stress": [("timestamp", "记录时间"), ("stress_score", "压力指数"),
+        ("level", "源等级（原值）"), ("_pressureBand", "压力等级（当前分界）")],
+    "abnormal": [("event_id", "事件记录标识"), ("start_at", "开始时间"),
+        ("end_at", "结束时间"), ("duration_seconds", "持续时长（秒）")],
+}
+
+
+def _pressure_label(value) -> str:
+    if not isinstance(value, (int, float)) or value < 1 or value > 100:
+        return "未分类"
+    return "放松" if value <= 25 else "轻度" if value <= 50 else "中度" if value <= 80 else "重度"
+
+
+def _csv_cell(value):
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _view_csv_chunks(service: ViewQueryService, selection: ViewSelection):
+    columns = VIEW_CSV_COLUMNS[selection.kind]
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow([label for _, label in columns])
+    yield ("\ufeff" + buffer.getvalue()).encode("utf-8")
+    records = service.iter_export(selection)
+    try:
+        for record in records:
+            buffer.seek(0)
+            buffer.truncate(0)
+            writer.writerow([_csv_cell(_pressure_label(record.get("stress_score"))
+                if field == "_pressureBand" else record.get(field)) for field, _ in columns])
+            yield buffer.getvalue().encode("utf-8")
+    finally:
+        records.close()
+
+
+async def _view_csv_stream(service: ViewQueryService, selection: ViewSelection):
+    # sqlite3 游标有线程亲和性：创建、读取、关闭均由本次导出的单一线程执行。
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="health-csv")
+    loop = asyncio.get_running_loop()
+    state = {}
+
+    def advance():
+        if "iterator" not in state:
+            state["iterator"] = _view_csv_chunks(service, selection)
+        return next(state["iterator"], None)
+
+    def close():
+        if "iterator" in state:
+            state["iterator"].close()
+
+    try:
+        while (chunk := await loop.run_in_executor(executor, advance)) is not None:
+            yield chunk
+    finally:
+        # 先排入关闭任务；即使当前请求被取消，任务也不能被 cancel_futures 丢弃。
+        closing = executor.submit(close)
+        executor.shutdown(wait=False)
+        await asyncio.shield(asyncio.wrap_future(closing))
+
+
+class _ViewCSVResponse(StreamingResponse):
+    async def stream_response(self, send):
+        try:
+            await super().stream_response(send)
+        finally:
+            # 发送失败或断开时 async for 不保证及时 aclose，显式释放数据库迭代器。
+            await self.body_iterator.aclose()
+
+
+@app.get("/api/views/{kind}/export")
+def get_view_export(
+    request: Request,
+    selection: Annotated[ViewSelection, Depends(_view_selection)],
+) -> StreamingResponse:
+    return _ViewCSVResponse(_view_csv_stream(_view_service(request), selection),
+        media_type="text/csv; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Content-Disposition":
+            f'attachment; filename="mi_fitness_{selection.kind}_{selection.start_date}_{selection.end_date}.csv"'})
 
 
 def _to_csv(rows: list[dict[str, Any]]) -> str:

@@ -170,6 +170,27 @@ def create_app(
 
         started = time.perf_counter()
         try:
+            parts = clean_subpath.split("/")
+            if request.method == "GET" and len(parts) == 4 and parts[:2] == ["api", "views"] and parts[3] == "export":
+                upstream_request = http_client.build_request("GET", target_url, headers=forward_headers)
+                upstream_resp = http_client.send(upstream_request, stream=True)
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                # 导出只保留下载必需的响应头，不能把服务端鉴权头带回浏览器。
+                response_headers = [(key, value) for key, value in upstream_resp.headers.items()
+                    if key.lower() in {"content-type", "content-disposition"}]
+                response_headers.append(("X-Upstream-Time-Ms", str(int(elapsed_ms))))
+
+                def chunks():
+                    try:
+                        yield from upstream_resp.iter_bytes()
+                    finally:
+                        upstream_resp.close()
+
+                response = Response(chunks(), status=upstream_resp.status_code, headers=response_headers)
+                # 也覆盖尚未开始消费就关闭响应的路径。
+                response.call_on_close(upstream_resp.close)
+                return response
+
             upstream_resp = http_client.request(
                 method=request.method,
                 url=target_url,
