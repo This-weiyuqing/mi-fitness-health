@@ -372,55 +372,33 @@ function sleepDays(rows) {
 }
 
 async function loadOverview() {
-  const requestId = ++state.overviewRequestId;
+  const requestId = ++state.overviewRequestId, start=getSd(), end=getEd();
+  if(state.overviewController)state.overviewController.abort();
+  const controller=new AbortController();state.overviewController=controller;
+  const isCurrent=()=>requestId===state.overviewRequestId&&state.activeTab==='overview'&&getSd()===start&&getEd()===end;
   showToast('正在加载仪表盘概览…', '', 'info', 1500);
-  ['statSteps', 'statCalories', 'statDistance', 'statHr', 'statSleep', 'statSpo2', 'statStress'].forEach(id => {
-    $(id).textContent = '--';
-  });
-  const currentView = {isCurrent: () => requestId === state.overviewRequestId && state.activeTab === 'overview'};
-  const summaryPromise = api('GET', getRangeQuery('/api/summary'), null, currentView);
-  const hrPromise = api('GET', getRangeQuery('/api/heart-rate') + '&sample_type=resting', null, {inspect:false});
-  const sleepPromise = api('GET', getRangeQuery('/api/sleep') + '&include_naps=true', null, {inspect:false});
-  const spo2Promise = api('GET', getRangeQuery('/api/spo2'), null, {inspect:false});
-  const stressPromise = api('GET', getRangeQuery('/api/stress'), null, {inspect:false});
-
-  const responses = await Promise.all([
-    summaryPromise, hrPromise, sleepPromise, spo2Promise, stressPromise
-  ]);
-  if (requestId !== state.overviewRequestId) return;
-  const [summary, hr, sleep, spo2, stress] = responses.map(responseRows);
-  $('overviewRange').textContent = `${getSd()} 至 ${getEd()}；缺失日期不按 0 计入均值`;
-  $('statActivityCoverage').textContent = `已记录 ${new Set(summary.map(row => row.date)).size} 天`;
-  const days = sleepDays(sleep);
-  $('statSleepCoverage').textContent = `记录 ${days.size} 天 · 含小睡`;
-  $('statHrCoverage').textContent = `样本 ${numericValues(hr, 'bpm').length} 条`;
-  $('statSpo2Coverage').textContent = `样本 ${numericValues(spo2, 'spo2_pct').length} 条`;
-
-  if (summary && Array.isArray(summary) && summary.length > 0) {
-    $('statSteps').textContent = displayNumber(aggregateValue(summary, 'steps'), value => value.toLocaleString());
-    $('statCalories').textContent = displayNumber(aggregateValue(summary, 'active_kcal'), Math.round);
-    $('statDistance').textContent = displayNumber(aggregateValue(summary, 'distance_m'), value => (value / 1000).toFixed(2));
+  ['statSteps', 'statCalories', 'statDistance', 'statHr', 'statSleep', 'statSpo2', 'statStress', 'statActivityCoverage', 'statSleepCoverage', 'statHrCoverage', 'statSpo2Coverage'].forEach(id => {$(id).textContent = '--';});
+  if(!start||!end||start>end){clearInspector();$('overviewRange').textContent='请选择有效的开始和结束日期。';return;}
+  const result=await api('GET',getRangeQuery('/api/overview'),null,{isCurrent,signal:controller.signal});
+  if(!isCurrent())return;
+  if(!result||result.status!=='ok'||!result.data||Array.isArray(result.data)){
+    $('overviewRange').textContent='概览查询失败，请重试或查看控制台。';
+    showToast('数据未加载','请查看接口错误；未用 0 替代失败数据','warning');return;
   }
-
-  if (hr && Array.isArray(hr) && hr.length > 0) {
-    $('statHr').textContent = displayNumber(aggregateValue(hr, 'bpm', true), value => String(Math.round(value * 10) / 10));
-  }
-
-  if (sleep && Array.isArray(sleep) && sleep.length > 0) {
-    const minutes = days.size ? [...days.values()].reduce((sum, value) => sum + value, 0) / days.size : null;
-    $('statSleep').textContent = displayNumber(minutes, value => (value / 60).toFixed(1));
-  }
-
-  if (spo2 && Array.isArray(spo2) && spo2.length > 0) {
-    $('statSpo2').textContent = displayNumber(aggregateValue(spo2, 'spo2_pct', true), value => `${Math.round(value * 10) / 10}%`);
-  }
-
-  if (stress && Array.isArray(stress) && stress.length > 0) {
-    $('statStress').textContent = displayNumber(aggregateValue(stress, 'stress_score', true), value => String(Math.round(value * 10) / 10));
-  }
-
-  const failed = responses.some(response => !response || (!Array.isArray(response) && response.status !== 'ok'));
-  showToast(failed ? '部分数据未加载' : '仪表盘已刷新', failed ? '请查看接口错误；未用 0 替代失败数据' : '已按所选日期汇总', failed ? 'warning' : 'success');
+  const data=result.data;
+  $('overviewRange').textContent = `${start} 至 ${end}；缺失日期不按 0 计入均值`;
+  $('statActivityCoverage').textContent = `已记录 ${data.activity_days??0} 天`;
+  $('statSleepCoverage').textContent = `记录 ${data.sleep_days??0} 天 · 含小睡`;
+  $('statHrCoverage').textContent = `样本 ${data.resting_count??0} 条`;
+  $('statSpo2Coverage').textContent = `样本 ${data.spo2_count??0} 条`;
+  $('statSteps').textContent = displayNumber(data.steps,value=>value.toLocaleString());
+  $('statCalories').textContent = displayNumber(data.active_kcal,Math.round);
+  $('statDistance').textContent = displayNumber(data.distance_m,value=>(value/1000).toFixed(2));
+  $('statHr').textContent = displayNumber(data.resting_mean_bpm,value=>String(Math.round(value*10)/10));
+  $('statSleep').textContent = displayNumber(data.mean_daily_asleep_minutes,value=>(value/60).toFixed(1));
+  $('statSpo2').textContent = displayNumber(data.mean_spo2_pct,value=>`${Math.round(value*10)/10}%`);
+  $('statStress').textContent = displayNumber(data.mean_stress,value=>String(Math.round(value*10)/10));
+  showToast('仪表盘已刷新','已按所选日期汇总','success');
 }
 
 // Health Data Queries

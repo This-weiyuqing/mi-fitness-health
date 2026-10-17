@@ -3,6 +3,8 @@ function invalidateHealthQuery(){
   ++state.healthRequestId;
   if(state.healthController)state.healthController.abort();
   state.healthController=null;
+  if(state.healthPageController)state.healthPageController.abort();
+  state.healthPageController=null;
 }
 function clearInspector(){
   ++state.inspectorRequestId;
@@ -18,18 +20,14 @@ function setInspectorCollapsed(collapsed){
   localStorage.setItem('mi_fitness_inspector_collapsed',String(collapsed));
 }
 function toggleInspector(){setInspectorCollapsed(!$('inspectorPanel').hidden);}
-function healthPath(kind){
-  const endpoints={activity:'/api/summary',heartrate:'/api/heart-rate',sleep:'/api/sleep',workouts:'/api/workouts',body:'/api/body-measurements',spo2:'/api/spo2',stress:'/api/stress',abnormal:'/api/abnormal-heart-beat'};
-  let query=getRangeQuery(endpoints[kind]);
-  // 接口按源日期筛选；时间戳类型向两侧各取一天，再按北京时间精确归属。
-  if(kind!=='activity'&&getSd()&&getEd()){
-    const shift=(date,n)=>new Date(Date.parse(date)+n*86400000).toISOString().slice(0,10);
-    query=endpoints[kind]+'?start_date='+shift(getSd(),-1)+'&end_date='+shift(getEd(),1);
-  }
+function healthPath(kind,endpoint=''){
+  let query=getRangeQuery('/api/views/'+kind+endpoint);
+  const selection=healthSelection(kind);
   if(kind==='heartrate')query+=getSelQuery('hrType','sample_type');
   if(kind==='sleep')query+='&include_naps='+$('napsSelect').value;
-  if(kind==='body')query+='&latest_only=false';
-
+  if(kind==='body')query+='&latest_only='+selection.latestOnly;
+  if(kind==='stress'&&selection.pressureLevel)query+='&pressure_level='+encodeURIComponent(selection.pressureLevel);
+  if(selection.limit!==null)query+='&limit='+selection.limit;
   return query;
 }
 function healthSelection(kind){
@@ -69,12 +67,12 @@ async function loadHealthView(kind){
   const isCurrent=()=>id===state.healthRequestId&&state.activeTab===kind&&getSd()===start&&getEd()===end&&healthPath(kind)===path&&JSON.stringify(healthSelection(kind))===selectionKey;
   const result=await api('GET',path,null,{isCurrent,signal:controller.signal});
   if(!isCurrent())return;
-  if(!result||result.status!=='ok'||!Array.isArray(result.data)){
+  if(!result||result.status!=='ok'||!result.statistics||!Array.isArray(result.points)||!result.page||!Array.isArray(result.page.rows)){
     container.innerHTML='<div class="glass-panel health-empty" role="alert">查询失败，未显示旧数据。请重试或展开控制台查看原因。</div>';return;
   }
   try{
-    const model=HealthViews.build(kind,result.data,{start,end,...selection});
-    state.healthViews[kind]={model,page:1};
+    const model=HealthViews.fromSummary(kind,result,{start,end,...selection});
+    state.healthViews[kind]={model,page:model.page,isCurrent,path};
     container.innerHTML=HealthViews.render(model,1);
     // 日历晚到只更新当前查询，健康记录不等待外部日历下载。
     calendarRequest.then(calendar=>{
@@ -87,17 +85,33 @@ async function loadHealthView(kind){
     container.innerHTML='<div class="glass-panel health-empty" role="alert">数据展示失败，请检查日期范围或展开控制台查看原始记录。</div>';
   }
 }
-function healthPage(kind,page){
-  const saved=state.healthViews[kind];if(!saved)return;
-  saved.page=Math.min(Math.max(1,Math.ceil(saved.model.records.length/10)),Math.max(1,page));
-  $('healthView-'+kind).querySelector('.health-table-page').innerHTML=HealthViews.detail(saved.model,saved.page);
+async function healthPage(kind,page){
+  const saved=state.healthViews[kind];if(!saved||!saved.isCurrent())return;
+  page=Math.min(1000000,Math.max(1,Math.min(Math.ceil(saved.model.total/10)||1,page)));
+  if(state.healthPageController)state.healthPageController.abort();
+  const controller=new AbortController();state.healthPageController=controller;
+  const requestId=state.healthPageRequestId=(state.healthPageRequestId||0)+1;
+  const isCurrent=()=>requestId===state.healthPageRequestId&&state.healthViews[kind]===saved&&saved.isCurrent();
+  // 同步期间总数可能减少；退到有效末页，不把越界页误报为无数据。
+  while(isCurrent()){
+    const result=await api('GET',healthPath(kind,'/records')+'&page='+page,null,{isCurrent,signal:controller.signal});
+    if(!isCurrent())return;
+    const target=$('healthView-'+kind).querySelector('.health-table-page');
+    if(!result||result.status!=='ok'||!result.page||!Array.isArray(result.page.rows)){
+      target.innerHTML='<div class="health-empty" role="alert">明细查询失败，请重试。</div>'+HealthViews.detail(saved.model,saved.page);return;
+    }
+    const last=Math.max(1,Math.ceil(result.page.total/10));
+    if(page>last){page=last;continue;}
+    saved.page=result.page.number;saved.model.page=saved.page;
+    saved.model.records=result.page.rows;saved.model.total=result.page.total;
+    target.innerHTML=HealthViews.detail(saved.model,saved.page);return;
+  }
 }
 function exportHealthRecords(kind){
-  const saved=state.healthViews[kind];if(!saved)return;
-  const blob=new Blob(['\uFEFF',HealthViews.csv(saved.model)],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob),link=document.createElement('a');
-  link.href=url;link.download=`${saved.model.title}_${saved.model.range.start}_${saved.model.range.end}.csv`;
-  document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const saved=state.healthViews[kind];if(!saved||!saved.isCurrent())return;
+  const link=document.createElement('a');
+  link.href='/proxy'+healthPath(kind,'/export');link.download='';
+  document.body.appendChild(link);link.click();link.remove();
 }
 function initHealthViews(){
   setInspectorCollapsed(localStorage.getItem('mi_fitness_inspector_collapsed')!=='false');

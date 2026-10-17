@@ -14,21 +14,17 @@ function dashboard(responses) {
   const context = vm.createContext({
     localStorage: {getItem() {return '';}, setItem() {}},
     document: {getElementById: get, querySelectorAll() {return [];}, addEventListener() {}},
-    responses, console, setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {},
+    responses, console, AbortController, setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {},
   });
  vm.runInContext(fs.readFileSync('src/mi_fitness_mcp/web_assets/static/js/health-ui.js','utf8'),context);
   vm.runInContext(fs.readFileSync(file, 'utf8'), context);
-  vm.runInContext("showToast = () => {}; api = async (method, url) => responses[url.split('?')[0]] || {status:'ok',data:[]};", context);
+  vm.runInContext("showToast = () => {}; api = async (method, url) => responses[url.split('?')[0]] || {status:'ok',data:{steps:null,active_kcal:null,distance_m:null,resting_mean_bpm:null,mean_daily_asleep_minutes:null,mean_spo2_pct:null,mean_stress:null,activity_days:0,sleep_days:0,resting_count:0,spo2_count:0}};", context);
   return {context, get};
 }
 
 test('overview aggregates the selected range instead of taking the latest day', async () => {
   const ui = dashboard({
-    '/api/summary': {status:'ok',data:[{date:'2026-10-16',steps:4063,active_kcal:250,distance_m:2385},{date:'2026-10-15',steps:4691,active_kcal:596,distance_m:2979}]},
-    '/api/heart-rate': {status:'ok',data:[{timestamp:'2026-10-16T09:00:00+08:00',bpm:62}]},
-    '/api/sleep': {status:'ok',data:[{end_at:'2026-10-16T08:54:00+08:00',duration_minutes:517},{end_at:'2026-10-15T07:55:00+08:00',duration_minutes:474}]},
-    '/api/spo2': {status:'ok',data:[{timestamp:'2026-10-16T09:00:00+08:00',spo2_pct:98}]},
-    '/api/stress': {status:'ok',data:[{timestamp:'2026-10-16T09:00:00+08:00',stress_score:0}]},
+    '/api/overview': {status:'ok',data:{steps:8754,active_kcal:846,distance_m:5364,resting_mean_bpm:62,mean_daily_asleep_minutes:495.5,mean_spo2_pct:98,mean_stress:0,activity_days:2,sleep_days:2,resting_count:1,spo2_count:1}},
   });
   await vm.runInContext('loadOverview()',ui.context);
   assert.equal(ui.get('statSteps').textContent, (8754).toLocaleString());
@@ -40,12 +36,9 @@ test('overview aggregates the selected range instead of taking the latest day', 
   assert.equal(String(ui.get('statStress').textContent),'0');
 });
 
-test('range averages include all samples and group naps by wake date without filling missing days', async () => {
+test('overview displays server range averages and wake-day coverage without filling missing days', async () => {
   const ui=dashboard({
-    '/api/heart-rate':{status:'ok',data:[{bpm:60},{bpm:70}]},
-    '/api/spo2':{status:'ok',data:[{spo2_pct:96},{spo2_pct:98}]},
-    '/api/stress':{status:'ok',data:[{stress_score:0},{stress_score:60}]},
-    '/api/sleep':{status:'ok',data:[{end_at:'2026-10-15T07:55:00+08:00',duration_minutes:474},{end_at:'2026-10-16T08:54:00+08:00',duration_minutes:517},{end_at:'2026-10-16T14:00:00+08:00',duration_minutes:60,is_nap:true}]},
+    '/api/overview':{status:'ok',data:{steps:null,active_kcal:null,distance_m:null,resting_mean_bpm:65,mean_spo2_pct:97,mean_stress:30,mean_daily_asleep_minutes:525.5,activity_days:0,sleep_days:2,resting_count:2,spo2_count:2}},
   });
   ui.get('startDate').value='2026-10-01';
   await vm.runInContext('loadOverview()',ui.context);
@@ -63,7 +56,8 @@ test('30 day preset is inclusive and refreshes the overview without manual reloa
   assert.equal(ui.get('startDate').value,'2026-09-17');
   assert.equal(ui.get('endDate').value,'2026-10-16');
   const calls=vm.runInContext('calls',ui.context);
-  assert.equal(calls.length,5);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0],'/api/overview?start_date=2026-09-17&end_date=2026-10-16');
   assert.ok(calls.every(path=>!path.includes('limit=1')));
   await vm.runInContext("setDatePreset('yesterday')",ui.context);
   assert.equal(ui.get('startDate').value,'2026-10-15');

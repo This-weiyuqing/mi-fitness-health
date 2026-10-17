@@ -1,4 +1,4 @@
-/* 健康数据展示：统计全部返回记录，图表和表格限制渲染数量。 */
+/* 健康数据展示：页面消费服务端摘要和当前页，build 保留为基线辅助。 */
 (function(root,factory){
   const api=factory();
   if(typeof module==='object'&&module.exports)module.exports=api;
@@ -40,7 +40,7 @@
     return {off:override?override.isOffDay:weekday===0||weekday===6,provisional:!known};
   }
   function calendarLegend(m){
-    if(!m.records.length)return '';
+    if(!recordTotal(m))return '';
     if(m.stride>1)return '<div class="health-caption">多日汇总不标注单日工作属性；缩小到 120 天以内可查看每日标记。</div>';
     const missing=[...new Set(m.points.filter(p=>calendarDay(p.date,m.range.calendar).provisional).map(p=>p.date.slice(0,4)))];
     return `<div class="health-calendar-legend"><span><i style="background:#e78325"></i>工作日</span><span><i style="background:#22a06b"></i>非工作日</span></div><div class="health-caption">${missing.length?esc(missing.join('、'))+' 年调休安排未更新，暂按周一至周五/周末区分。':'按中国大陆节假日及调休安排标注。'}</div>`;
@@ -125,6 +125,43 @@
     }
     return {kind,...c,cards,legend,points,records:rows,range:{...range},coverage,stride,labels,cell,references,referenceNote};
   }
+  function fromSummary(kind,payload,range){
+    const c=config[kind];if(!c)throw new Error('不支持的查询类型');
+    const s=payload.statistics,coverage=payload.coverage,latest=s.latest||{};
+    const distance=finite(s.total_distance_m)?s.total_distance_m/1000:null;
+    let cards,legend=[c.trend];
+    if(kind==='activity')cards=[card('期间总步数',s.primary_sum,'步'),card('活动消耗',s.total_active_kcal,'kcal'),card('累计距离',distance,'km'),card('记录覆盖',coverage,'天')];
+    else if(kind==='sleep'){
+      cards=[card('日均实睡',s.mean_daily_asleep_minutes,'','仅计算有记录的日期，含筛选后小睡',minutes),card('记录覆盖',coverage,'天'),card('日均深睡',s.mean_daily_deep_minutes,'','仅计算有深睡记录的日期',minutes),card('小睡记录',s.nap_count,'次')];
+      legend=['深睡','浅睡','REM','未分期'];
+    }else if(kind==='heartrate'){
+      cards=[card('被动心率均值',s.passive_mean_bpm,'bpm'),card('静息心率均值',s.resting_mean_bpm,'bpm'),card('最低心率',s.primary_min,'bpm'),card('最高心率',s.primary_max,'bpm')];
+      legend=['被动采样','静息','其他类型'];
+    }else if(kind==='workouts')cards=[card('运动次数',s.count,'次'),card('运动时长',s.primary_sum,'分钟'),card('累计距离',distance,'km'),card('运动热量',s.total_calories_kcal,'kcal')];
+    else if(kind==='body')cards=[card('最近体重',latest.weight_kg,'kg'),card('最近 BMI',latest.bmi),card('最近体脂率',latest.body_fat_pct,'%'),card('测量记录',s.count,'次',s.count<2?'不足两次测量，无法判断体重变化趋势':'')];
+    else if(kind==='abnormal')cards=[card('已保存事件',s.count,'次'),card('累计时长',s.primary_sum,'秒'),card('有记录日期',coverage,'天'),card('最近事件',null,'','',()=>s.count?stamp(latest.start_at):'未保存')];
+    else cards=[card(`平均${kind==='spo2'?'血氧':'压力'}`,s.primary_mean,c.unit),card('最低值',s.primary_min,c.unit),card('最高值',s.primary_max,c.unit),card('记录覆盖',coverage,'天')];
+    const references=[];
+    const reference=(key,label,value,color)=>{if(finite(value))references.push({key,label,value,color});};
+    let referenceNote='';
+    if(kind==='activity'){
+      reference('average','日均',s.mean_daily_steps,'#d97706');reference('fixed','参考',7000,'#22a06b');referenceNote='平均步数按有步数记录的日期计算。';
+    }else if(kind==='heartrate'){
+      reference('average','总平均',s.primary_mean,'#d97706');reference('resting-average','静息平均',s.resting_mean_bpm,'#9467cf');reference('fixed','参考',170,'#db5267');referenceNote='总平均包含全部筛选样本，静息平均仅计算静息记录。';
+    }else if(kind==='sleep'){
+      reference('average','日均实睡',finite(s.mean_daily_asleep_minutes)?s.mean_daily_asleep_minutes/60:null,'#d97706');reference('fixed','参考',8,'#22a06b');referenceNote='平均线按有实睡记录的醒来日计算，包含筛选后的小睡。';
+    }else if(kind==='body'){
+      reference('average','平均',s.primary_mean,'#d97706');reference('fixed','参考',65,'#22a06b');referenceNote='平均线使用全部筛选体重测量记录；柱状图保留每日最近一次测量。';
+    }else if(kind==='spo2'){
+      reference('average','平均',s.primary_mean,'#d97706');referenceNote='平均线按全部筛选血氧样本计算。';
+    }else if(kind==='stress'){
+      reference('average','平均',s.primary_mean,'#d97706');pressureLevels.slice(0,3).forEach(level=>reference('stress-'+level.max,level.label+'上界',level.max,level.color));referenceNote='平均线按全部筛选压力样本计算；0 或超出 1–100 的数值保留为未分类。';
+    }
+    const labels=Object.fromEntries(c.columns.map(([label,key])=>[key,label]));
+    const cell=(r,key)=>key==='_pressureBand'?pressureBand(r.stress_score).label:r[key];
+    return {kind,...c,cards,legend,points:payload.points,records:payload.page.rows,total:payload.page.total,page:payload.page.number,range:{...range},coverage,stride:payload.stride,labels,cell,references,referenceNote};
+  }
+  const recordTotal=m=>m.total??m.records.length;
   function referenceLayout(m){
     const stacked=m.kind==='sleep',min=({body:40,spo2:80,heartrate:40})[m.kind]??0;let dataMax=min;
     for(const point of m.points)dataMax=Math.max(dataMax,stacked?point.values.reduce((s,v)=>s+(v??0),0):Math.max(...point.values.map(v=>v??0)));
@@ -138,7 +175,7 @@
     return {min,max,inside,outside:m.references.filter(r=>r.value>max||r.value<min)};
   }
   function referenceHeader(m){
-    const layout=referenceLayout(m),outside=m.records.length?layout.outside:[];
+    const layout=referenceLayout(m),outside=recordTotal(m)?layout.outside:[];
     if(!outside.length)return '';
     return `<div class="health-reference-overflow">${outside.map(r=>`<span class="health-reference-badge" style="color:${r.color}" title="超出当前纵轴，仅在上方标注">${esc(r.label)} ${esc(num(r.value))}${esc(m.unit)} ${r.value<layout.min?'↓':'↑'}</span>`).join('')}<span class="health-caption">超出当前纵轴</span></div>`;
   }
@@ -146,7 +183,7 @@
     return m.kind==='stress'?`<div class="health-pressure-legend">${pressureLevels.map(level=>`<span><i style="background:${level.color}"></i>${level.label} ${level.min}–${level.max}</span>`).join('')}</div>`:'';
   }
   function chart(m){
-    if(!m.records.length)return '<div class="health-empty">NAS 在所选期间未保存此类记录。未保存不表示正常或没有发生。</div>';
+    if(!recordTotal(m))return '<div class="health-empty">NAS 在所选期间未保存此类记录。未保存不表示正常或没有发生。</div>';
     const height=158, step=880/m.points.length, stacked=m.kind==='sleep';
     const layout=referenceLayout(m),max=layout.max,min=layout.min;let content='',below=false;
     for(let i=0;i<=4;i++){const y=14+height-i*height/4;content+=`<line x1="58" y1="${y}" x2="948" y2="${y}" class="health-grid"/><text x="48" y="${y+4}" text-anchor="end">${esc(num(min+(max-min)*i/4))}</text>`;}
@@ -176,9 +213,9 @@
     return `<svg viewBox="0 0 960 220" role="img" aria-label="${esc(m.trend)}（${esc(m.unit)}）">${content}</svg>${calendarLegend(m)}${below?'<div class="health-caption">↓ 表示低于纵轴下限；明细和统计保留原值。</div>':''}`;
   }
   function detail(m,page=1){
-    const pages=Math.max(1,Math.ceil(m.records.length/10));page=Math.min(pages,Math.max(1,page));
-    const slice=m.records.slice((page-1)*10,page*10);
-    return `<div class="data-table-container"><table class="data-table"><thead><tr>${m.columns.map(([label])=>`<th>${esc(label)}</th>`).join('')}</tr></thead><tbody>${slice.map(r=>`<tr>${m.columns.map(([,key,format])=>{const value=m.cell(r,key);return `<td>${esc(format?format(value):finite(value)?num(value,2):value)}</td>`;}).join('')}</tr>`).join('')}</tbody></table></div>${!slice.length?'<div class="health-empty">NAS 在所选期间未保存此类记录</div>':''}<div class="health-pagination"><span>共 ${m.records.length.toLocaleString('zh-CN')} 条 · 每页 10 条</span><div><button class="btn btn-outline btn-sm" data-health-page="${page-1}" ${page===1?'disabled':''}>上一页</button><span> ${page} / ${pages} </span><button class="btn btn-outline btn-sm" data-health-page="${page+1}" ${page===pages?'disabled':''}>下一页</button></div></div>`;
+    const total=recordTotal(m),pages=Math.max(1,Math.ceil(total/10));page=Math.min(pages,Math.max(1,m.total===undefined?page:m.page));
+    const slice=m.total===undefined?m.records.slice((page-1)*10,page*10):m.records;
+    return `<div class="data-table-container"><table class="data-table"><thead><tr>${m.columns.map(([label])=>`<th>${esc(label)}</th>`).join('')}</tr></thead><tbody>${slice.map(r=>`<tr>${m.columns.map(([,key,format])=>{const value=m.cell(r,key);return `<td>${esc(format?format(value):finite(value)?num(value,2):value)}</td>`;}).join('')}</tr>`).join('')}</tbody></table></div>${!total?'<div class="health-empty">NAS 在所选期间未保存此类记录</div>':''}<div class="health-pagination"><span>共 ${total.toLocaleString('zh-CN')} 条 · 每页 10 条</span><div><button class="btn btn-outline btn-sm" data-health-page="${page-1}" ${page===1?'disabled':''}>上一页</button><span> ${page} / ${pages} </span><button class="btn btn-outline btn-sm" data-health-page="${page+1}" ${page===pages?'disabled':''}>下一页</button></div></div>`;
   }
   function render(m,page=1){
     const title=`${m.range.start} 至 ${m.range.end} · 北京时间`;
@@ -192,5 +229,5 @@
     const header=k=>m.kind==='stress'&&k==='level'?'源等级（原值）':k==='_pressureBand'?'压力等级（当前分界）':m.labels[k]||k;
     return [keys.map(k=>quote(header(k))).join(','),...m.records.map(r=>keys.map(k=>quote(k==='_pressureBand'?m.cell(r,k):r[k])).join(','))].join('\r\n');
   }
-  return {kinds,build,render,detail,csv,day,stamp,pressureBand,referenceLayout,calendarDay};
+  return {kinds,build,fromSummary,render,detail,csv,day,stamp,pressureBand,referenceLayout,calendarDay};
 });

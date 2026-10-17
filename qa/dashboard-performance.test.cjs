@@ -8,22 +8,24 @@ function fixture(){
   const records=Array.from({length:3000},(_,i)=>({timestamp:`2026-10-16T09:${String(i%60).padStart(2,'0')}:00+08:00`,stress_score:30}));
   const responses={summary:[{date:'2026-10-16',steps:6000,active_kcal:500,distance_m:4000}],
     'heart-rate':[{bpm:62}],sleep:[{end_at:'2026-10-16T08:00:00+08:00',duration_minutes:450}],spo2:[{spo2_pct:97}],stress:records};
-  const copied=[];
+  const copied=[],requests=[];
   const context=vm.createContext({document:{getElementById:get,querySelectorAll(){return [];},addEventListener(){}},
-    localStorage:{getItem(){return '';},setItem(){}},performance,console,setTimeout(){},setInterval(){},clearTimeout(){},clearInterval(){},
+    AbortController,localStorage:{getItem(){return '';},setItem(){}},performance,console,setTimeout(){},setInterval(){},clearTimeout(){},clearInterval(){},
     navigator:{clipboard:{writeText(text){copied.push(text);return Promise.resolve();}}},
-    fetch:async url=>({status:200,ok:true,text:async()=>JSON.stringify({status:'ok',data:responses[url.split('?')[0].split('/').pop()]||[]})})});
+    fetch:async url=>{requests.push(url);return {status:200,ok:true,text:async()=>JSON.stringify({status:'ok',data:url.startsWith('/proxy/api/overview?')?{steps:6000,active_kcal:500,distance_m:4000,resting_mean_bpm:62,mean_daily_asleep_minutes:450,mean_spo2_pct:97,mean_stress:30,activity_days:1,sleep_days:1,resting_count:1,spo2_count:1}:responses[url.split('?')[0].split('/').pop()]||[]})};}});
  vm.runInContext(fs.readFileSync('src/mi_fitness_mcp/web_assets/static/js/health-ui.js','utf8'),context);
   vm.runInContext(fs.readFileSync('src/mi_fitness_mcp/web_assets/static/js/app.js','utf8'),context);
   vm.runInContext('showToast=()=>{}; renderCount=0; originalRender=renderJsonViewer; renderJsonViewer=(data)=>{renderCount++;originalRender(data);};',context);
-  return {context,get,copied};
+  return {context,get,copied,requests};
 }
 test('overview paints one small response instead of five full datasets',async()=>{
   const ui=fixture();await vm.runInContext('loadOverview()',ui.context);
   assert.equal(vm.runInContext('renderCount',ui.context),1);
   assert.equal(ui.get('statStress').textContent,'30');
   assert.equal(ui.get('statSteps').textContent,(6000).toLocaleString());
-  assert.equal(vm.runInContext('state.lastRequestInfo.path.split("?")[0]',ui.context),'/api/summary');
+  assert.equal(vm.runInContext('state.lastRequestInfo.path.split("?")[0]',ui.context),'/api/overview');
+  assert.deepEqual(ui.requests,['/proxy/api/overview?start_date=2026-09-18&end_date=2026-10-17']);
+  assert.ok(JSON.stringify(vm.runInContext('state.lastResponse',ui.context)).length<500);
 });
 test('silent and superseded requests do not overwrite inspector state',async()=>{
   const ui=fixture();ui.get('inspectorBody').innerHTML='keep-current';
